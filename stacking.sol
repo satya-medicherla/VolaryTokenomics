@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-contract StakingToken is ERC20, Ownable {
+contract StakingToken is Ownable {
     uint256 stakeId=0;
     mapping(address => bool) public isStakeHolder;
     mapping(address => uint256) internal rewards;
@@ -12,6 +12,8 @@ contract StakingToken is ERC20, Ownable {
     mapping(uint256 => bool) isPenalized;
     mapping(uint256 => uint256) penalizedStakePeriod;
     mapping(uint256 => uint256) stakeRemoved;
+    address rewardPool;
+    address tokenContract;
     address treasury;
     uint256 SILVER_LEVEL_TOKENS = 1667 * 10 ** 18;
     struct stake{
@@ -23,16 +25,14 @@ contract StakingToken is ERC20, Ownable {
     mapping(uint256 => stake) public getStakeById;
     mapping(address => stake[]) public getStakesOfAddress;
     mapping(uint256 => uint256) public stakedPeriod;
-    constructor(address _treasury)  ERC20("Volary", "VLRY")
-    { 
-        treasury=_treasury;
-        _mint(treasury, 1000000000 * 10 ** decimals());
-    }
 
+    
+    
+        
     function createStake(uint256 _stakeAmount,uint256 _duration)
         public
     {
-        bool result=transfer(address(this),_stakeAmount);
+        bool result=IERC20(tokenContract).transferFrom(msg.sender,address(this),_stakeAmount);
         require(result,"stake transfer failed");
         stake storage newStake=getStakeById[stakeId];
         newStake.holder = msg.sender;
@@ -49,7 +49,7 @@ contract StakingToken is ERC20, Ownable {
           require(stakeId > _stakeId,"stake doesnt exist");
           require(msg.sender == getHolderByStakeId(_stakeId),"only stakeholder can update stake");
           stake storage temp = getStakeById[_stakeId];
-          bool result=transfer(address(this),_addStake);
+          bool result=IERC20(tokenContract).transfer(address(this),_addStake);
           require(result,"stake transfer failed");
           temp.stakeAmount=temp.stakeAmount + _addStake;
           return true;
@@ -77,7 +77,7 @@ contract StakingToken is ERC20, Ownable {
                  isPenalized[_stakeId]= true;
                  if(stakedPeriod[_stakeId]==0)stakedPeriod[_stakeId]=block.timestamp;
         }
-        bool result=transfer( msg.sender , _stake - penalty);
+        bool result=IERC20(tokenContract).transfer( msg.sender , _stake - penalty);
         require(result,"error transfering tokens to holder");
         stake storage temp = getStakeById[_stakeId];
         temp.stakeAmount= getStakeAmount(_stakeId) - _stake;
@@ -174,8 +174,16 @@ contract StakingToken is ERC20, Ownable {
     }
 
     function resetStakedPeriod(uint256 _stakeId) public onlyOwner returns(bool){
-        stakedPeriod[_stakeId] = 0;
+        stakeRemoved[_stakeId] = 0;
         return true;
     }
 
+    function addRewardPoolAddress(address _rewardPool) public onlyOwner returns(bool){
+        rewardPool=_rewardPool;
+        return true;
+    }
+    function addTokenContract(address _tokenContract)public onlyOwner returns(bool){
+        tokenContract = _tokenContract;
+        return true;
+    }
 }
