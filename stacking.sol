@@ -3,16 +3,23 @@ pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+
+interface rewardPool{
+    function imposeRewardPenalty(uint256 _stakeId,uint256 stakedPeriod,uint256 _removedStake,uint256 _totalStake) external returns(bool);
+    function getCurrentEpoch() external view returns(uint256);
+}
 contract StakingToken is Ownable {
     uint256 stakeId=0;
+    uint256 constant MAX_STACKING_PERIOD = 13305600;
     mapping(address => bool) public isStakeHolder;
     mapping(address => uint256) internal rewards;
     mapping(address => uint256) internal recentWithdrawTime;
     mapping(address => string) stackerLevel;
     mapping(uint256 => bool) isPenalized;
     mapping(uint256 => uint256) penalizedStakePeriod;
-    mapping(uint256 => uint256) stakeRemoved;
-    address rewardPool;
+    mapping(uint256 => uint256) addedInEpoch;
+
+    address rewardPoolAddress;
     address tokenContract;
     address treasury;
     uint256 SILVER_LEVEL_TOKENS = 1667 * 10 ** 18;
@@ -25,13 +32,17 @@ contract StakingToken is Ownable {
     mapping(uint256 => stake) public getStakeById;
     mapping(address => stake[]) public getStakesOfAddress;
     mapping(uint256 => uint256) public stakedPeriod;
+    mapping(uint256 => uint256) public stakedRemovedTime;
 
     
     
         
     function createStake(uint256 _stakeAmount,uint256 _duration)
         public
-    {
+    { 
+        require(rewardPoolAddress != address(0),"REWARD POOL NOT ADDED");
+        uint256 CURRENT_EPOCH = rewardPool(rewardPoolAddress).getCurrentEpoch();
+        addedInEpoch[stakeId] = CURRENT_EPOCH;
         bool result=IERC20(tokenContract).transferFrom(msg.sender,address(this),_stakeAmount);
         require(result,"stake transfer failed");
         stake storage newStake=getStakeById[stakeId];
@@ -44,15 +55,6 @@ contract StakingToken is Ownable {
         stackerLevel[msg.sender]=getStackerLevel(msg.sender);
         isStakeHolder[msg.sender]=true;
         
-    }
-    function updateStake(uint256 _stakeId,uint256 _addStake) public returns(bool){
-          require(stakeId > _stakeId,"stake doesnt exist");
-          require(msg.sender == getHolderByStakeId(_stakeId),"only stakeholder can update stake");
-          stake storage temp = getStakeById[_stakeId];
-          bool result=IERC20(tokenContract).transfer(address(this),_addStake);
-          require(result,"stake transfer failed");
-          temp.stakeAmount=temp.stakeAmount + _addStake;
-          return true;
     }
     function getStackerLevel(address _stakeholder) public view returns(string memory level) {
         if(stakeOf(_stakeholder) < SILVER_LEVEL_TOKENS)  level="none";
@@ -72,26 +74,34 @@ contract StakingToken is Ownable {
         require(msg.sender == getHolderByStakeId(_stakeId),"only stake holder can remove the stake");
         require(_stake <= getStakeAmount(_stakeId),"can remove only amount less than staked");
         uint256 penalty=0;
-        if(isDurationBound(_stakeId)){
-                 penalty = getPrincipalPenalty(_stakeId,_stake);
-                 isPenalized[_stakeId]= true;
-                 if(stakedPeriod[_stakeId]==0)stakedPeriod[_stakeId]=block.timestamp;
+        if( stakedRemovedTime[_stakeId] == 0 )
+         {
+              stakedPeriod[_stakeId] = block.timestamp - getStartTimeOfStake(_stakeId);
+              stakedRemovedTime[_stakeId] = block.timestamp;
+         }
+         else{
+            stakedPeriod[_stakeId] = block.timestamp - stakedRemovedTime[_stakeId];
+            stakedRemovedTime[_stakeId] = block.timestamp;
+         }
+
+        if(isEarlyUnstake(_stakeId)){
+                if(isDurationBound(_stakeId)) penalty = getPrincipalPenalty(_stake);
+                uint256 _totalStake=getStakeAmount(_stakeId);
+                rewardPool(rewardPoolAddress).imposeRewardPenalty(_stakeId,stakedPeriod[_stakeId],_stake,_totalStake);
+                isPenalized[_stakeId]= true;
         }
         bool result=IERC20(tokenContract).transfer( msg.sender , _stake - penalty);
         require(result,"error transfering tokens to holder");
         stake storage temp = getStakeById[_stakeId];
         temp.stakeAmount= getStakeAmount(_stakeId) - _stake;
         if(stakeOf(msg.sender) == 0) isStakeHolder[msg.sender] = false;
-        stakeRemoved[_stakeId] += _stake;
+
         
         return true;
     }
 
-    function getPrincipalPenalty(uint256 _stakeId,uint256 _stake) internal  view  returns(uint256 penalty){
-       if(getStakedPeriod(_stakeId) >= getDuration(_stakeId)) penalty=0;
-       else {
-           penalty = _stake * 5 / 100;
-       }
+    function getPrincipalPenalty(uint256 _stake) internal  pure   returns(uint256 penalty){    
+       penalty = _stake * 5 / 100 ;
 
     } 
 
@@ -159,27 +169,22 @@ contract StakingToken is Ownable {
         return stakeId;
     }
 
-    function getStakeRemoved(uint256 _stakeId) public view returns(uint256){
-    
-        return stakeRemoved[_stakeId];
-    }
-
-    function resetStakeRemoved(uint256 _stakeId) public onlyOwner returns(bool){
-        stakeRemoved[_stakeId] = 0;
-        return true;
+    function getAddedEpoch(uint256 _stakeId) public view returns(uint256){
+        return addedInEpoch[_stakeId];
     }
 
     function getStakedPeriod(uint256 _stakeId) public view returns(uint256){
          return stakedPeriod[_stakeId];
     }
 
-    function resetStakedPeriod(uint256 _stakeId) public onlyOwner returns(bool){
-        stakeRemoved[_stakeId] = 0;
-        return true;
+    
+    function isEarlyUnstake(uint256 _stakeId) public view returns(bool){
+         if ( stakedPeriod[_stakeId] == 0 || stakedPeriod[_stakeId] >= MAX_STACKING_PERIOD) return true;
+         return false;
+      
     }
-
     function addRewardPoolAddress(address _rewardPool) public onlyOwner returns(bool){
-        rewardPool=_rewardPool;
+        rewardPoolAddress=_rewardPool;
         return true;
     }
     function addTokenContract(address _tokenContract)public onlyOwner returns(bool){
