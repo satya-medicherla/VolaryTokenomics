@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
-import "./uniswapFeeRouter.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 interface  StakingToken {
     function createStake(uint256 _stakeAmount,uint256 _duration) external ;
     function updateStake(uint256 _stakeId,uint256 _addStake) external  returns(bool);
@@ -21,26 +22,30 @@ interface  StakingToken {
 
 contract rewardPool is Ownable{
     uint256 POOL_START_TIME;
-    uint256 DISTRIBUTION_CYCLE;
-    //uint256 EPOCH_TIME=604800; // 1 WEEK
-    uint256 EPOCH_TIME= 120;
+    uint256 public DISTRIBUTION_CYCLE;
+    uint256 constant EPOCH_TIME=604800; // 1 WEEK
+   // uint256 constant EPOCH_TIME= 120;
     uint256 constant WEEK_TIME= 604800;
+    //uint256 constant WEEK_TIME= 120;
     uint256 constant DISTRIBUTION_TIME = 604800*2;
-    uint256 MIN_STACKING_PERIOD = 2419200; // 4 weeks time
+   uint256 MIN_STACKING_PERIOD = 2419200; // 4 weeks time
+   //uint256 MIN_STACKING_PERIOD = 240;
     uint256 MAX_STACKING_PERIOD = 13305600;
     address TOKEN_ADDRESS;
     address STAKING_CONTRACT;
-    uint256 CURRENT_EPOCH;
+    uint256 public CURRENT_EPOCH;
     address EXCHANGE_ADDRESS;
     address USDT_ADDRESS;
-    mapping(uint256 => uint256) REWARD_WEIGHT_TO_STAKE;
-    mapping(uint256 => uint256) EPOCH_TO_START_TIME;
-    mapping(uint256 => mapping(uint256 => uint256)) STAKED_REWARDS_PER_EPOCH;
-    mapping(uint256 => uint256) EPOCH_START_BALANCE;
-    mapping(uint256 => mapping(uint256 => uint256)) public  ACCUMALATED_REWARDS_IN_DISTRIBUTION_CYCLE;
-    mapping(uint256 => mapping(uint256 => uint256)) public  ACCUMALATED_REWARDS_IN_EPOCH;
-    mapping(uint256 => mapping(uint256 => uint256)) public  ACCUMALATED_PENALTY_IN_DISTRIBUTION_CYCLE;
+    mapping(uint256 => uint256) public REWARD_WEIGHT_TO_STAKE;
+    mapping(uint256 => uint256) public  EPOCH_TO_START_TIME;
+    mapping(uint256 => mapping(uint256 => uint256)) public STAKED_REWARDS_PER_EPOCH;
+    mapping(uint256 => uint256) public EPOCH_START_BALANCE;
+    mapping(uint256 => uint256) public  ACCUMALATED_REWARDS;
     mapping(uint256 => bool) isDistributed;
+    mapping(uint256 => uint256) public CLAIMABLE_REWARDS;
+    mapping(uint256 => uint256) DURATION_FACTOR;
+    mapping(uint256 => uint256) public CLAIMED_REWARDS;
+    address TREASURY;
     
 
 
@@ -48,30 +53,34 @@ contract rewardPool is Ownable{
     
 
 
-    constructor(address _token,address _stackingAddress,address _exchange,address _usdt){
+    constructor(address _token,address _stackingAddress,address _exchange,address _usdt,address _treasury)
+    {
         TOKEN_ADDRESS=_token;
         CURRENT_EPOCH=0;
         DISTRIBUTION_CYCLE=0;
         STAKING_CONTRACT= _stackingAddress;
         EXCHANGE_ADDRESS = _exchange;
         USDT_ADDRESS = _usdt;
+        TREASURY = _treasury;
     }
     modifier epochFinished{
-        require(block.timestamp >= EPOCH_TO_START_TIME[CURRENT_EPOCH]," epoch not completed");
+        require(block.timestamp >= EPOCH_TO_START_TIME[CURRENT_EPOCH]+EPOCH_TIME," epoch not completed");
         _;
     }
     modifier isDistributionReady{
-        require(CURRENT_EPOCH % 2 == 1 && !isDistributed[DISTRIBUTION_CYCLE],"Rewards can be distributed only after 4 epochs");
+        require(
+        CURRENT_EPOCH % 2 == 1 && CURRENT_EPOCH != 1
+        ,"Rewards can be distributed only after 4 epochs");
         _;
     }
     modifier poolStarted{
-        require(CURRENT_EPOCH != 0 && DISTRIBUTION_CYCLE!=1,
+        require(CURRENT_EPOCH != 0 && DISTRIBUTION_CYCLE != 0,
                 "POOL NOT STARTED");
         _;
     }
     function startPool() onlyOwner public returns(bool)
     {
-       require(CURRENT_EPOCH == 0 && DISTRIBUTION_CYCLE==1,
+       require(CURRENT_EPOCH == 0 && DISTRIBUTION_CYCLE== 0 ,
                 "POOL ALREADY STARTED");
        CURRENT_EPOCH = 1;
        DISTRIBUTION_CYCLE = 1;
@@ -114,8 +123,7 @@ contract rewardPool is Ownable{
             _rewards = (_stakeAmount * MAX_YIELD) /  (10 ** 12) ;
         }
 
-        ACCUMALATED_REWARDS_IN_DISTRIBUTION_CYCLE[DISTRIBUTION_CYCLE][_stakeId] = ACCUMALATED_REWARDS_IN_DISTRIBUTION_CYCLE[DISTRIBUTION_CYCLE][_stakeId]+_rewards;
-        ACCUMALATED_REWARDS_IN_EPOCH[CURRENT_EPOCH][_stakeId]=_rewards;
+        ACCUMALATED_REWARDS[_stakeId] = ACCUMALATED_REWARDS[_stakeId]+_rewards;
 
         return true;
     }
@@ -123,30 +131,60 @@ contract rewardPool is Ownable{
     function distributeRewards() public onlyOwner isDistributionReady poolStarted returns(uint256){
         uint256 distributedRewards = 0;
         uint256 len = StakingToken(STAKING_CONTRACT).getTotalNumberOfStakes();
-        for(uint256 i=0;i < len;i++){
+        for(uint256 i=0;i < len;i++)
+        {
               if(StakingToken(STAKING_CONTRACT).getAddedEpoch(i) >= CURRENT_EPOCH) break;
-              uint256 _rewards = ACCUMALATED_REWARDS_IN_DISTRIBUTION_CYCLE[DISTRIBUTION_CYCLE][i];
-              if(_rewards >= 50 * (10**18))
-              {
-              address holder = StakingToken(STAKING_CONTRACT).getHolderByStakeId(i);
-              bool result = IERC20(TOKEN_ADDRESS).transfer(holder,_rewards);
-              require(result,"ERROR : transferring rewards");
-              distributedRewards= distributedRewards + _rewards;
-              ACCUMALATED_REWARDS_IN_DISTRIBUTION_CYCLE[DISTRIBUTION_CYCLE+1][i]=0;
-              }
-              else{
-                   ACCUMALATED_REWARDS_IN_DISTRIBUTION_CYCLE[DISTRIBUTION_CYCLE+1][i]= ACCUMALATED_REWARDS_IN_DISTRIBUTION_CYCLE[DISTRIBUTION_CYCLE][i];
-              }
-              
+              uint256 _rewards = getRewardsToGive(i);
+              if(_rewards == 0) continue ;
+              CLAIMABLE_REWARDS[i] = _rewards;
+              CLAIMABLE_REWARDS[i] -= CLAIMED_REWARDS[i];
+              //address holder = StakingToken(STAKING_CONTRACT).getHolderByStakeId(i);
+              //bool result = IERC20(TOKEN_ADDRESS).transfer(holder,_rewards);
+              //require(result,"ERROR : transferring rewards");
+              distributedRewards= distributedRewards + _rewards;      
         }
-        isDistributed[DISTRIBUTION_CYCLE] = true;
         DISTRIBUTION_CYCLE = DISTRIBUTION_CYCLE + 1;
+        isDistributed[DISTRIBUTION_CYCLE] = true;
+        
         return distributedRewards;
             
     }
 
-    function getRewardsToGive(uint256 _stakePeriod) internal  returns(uint256){
-        
+    function claimRewards(uint256 _stakeId,uint256 _rewardToClaim) public returns(bool){
+        require(msg.sender == StakingToken(STAKING_CONTRACT).getHolderByStakeId(_stakeId),"ONLY HOLDER CLAIM REWARDS");
+        require(_rewardToClaim <= CLAIMABLE_REWARDS[_stakeId],"cant withdraw more than claimble rewards");
+        IERC20(TOKEN_ADDRESS).transfer(msg.sender,_rewardToClaim);
+        CLAIMED_REWARDS[_stakeId] += _rewardToClaim;
+        CLAIMABLE_REWARDS[_stakeId] -= _rewardToClaim;
+        return true;
+
+    }
+
+    function getDuration(uint256 _stakeId) view public returns(uint256){
+       return DURATION_FACTOR[_stakeId];
+    }
+
+    function getRewardsToGive(uint256 _stakeId) internal view returns(uint256){
+        uint256 _rewards = ACCUMALATED_REWARDS[_stakeId];
+        uint256 stakedPeriod = StakingToken(STAKING_CONTRACT).getStakedPeriod(_stakeId);
+        if(stakedPeriod < MIN_STACKING_PERIOD ) return (_rewards*50)/(100);    
+       else if (stakedPeriod >= MIN_STACKING_PERIOD && stakedPeriod < 2*MIN_STACKING_PERIOD)
+       {
+           return (_rewards*60)/(100);
+       }
+       else if (stakedPeriod >= 2*MIN_STACKING_PERIOD && stakedPeriod < 3*MIN_STACKING_PERIOD)
+       {
+           return (_rewards*70)/(100); 
+       }
+       else if (stakedPeriod >= 3*MIN_STACKING_PERIOD && stakedPeriod < 4*MIN_STACKING_PERIOD)
+       {
+           return (_rewards*80)/(100);
+       }
+       else if (stakedPeriod >= 4*MIN_STACKING_PERIOD && stakedPeriod < MAX_STACKING_PERIOD)
+       {
+           return (_rewards*90)/(100);
+       }
+       else if(stakedPeriod < MAX_STACKING_PERIOD) return _rewards;
     }
     
     function calculateRewardWeight(uint256 _stakeId,
@@ -158,8 +196,9 @@ contract rewardPool is Ownable{
      require(StakingToken(STAKING_CONTRACT).getAddedEpoch(_stakeId) < CURRENT_EPOCH,"THIS STAKE SHOULD BE CONSIDERED FOR NEXT EPOCH");
      uint256 stakeAmount = StakingToken(STAKING_CONTRACT).getStakeAmount(_stakeId);
      if(CURRENT_EPOCH % 12 != 1 ) _engagementFactor = 10 ** 6;
-     uint256 rewardWeight = (_mintingFactor * _referalFactor * _engagementFactor * _durationFactor * stakeAmount) / (10 ** 24);
+     uint256 rewardWeight = (_mintingFactor * _referalFactor * _engagementFactor * _durationFactor * stakeAmount) ;
      REWARD_WEIGHT_TO_STAKE[_stakeId] = rewardWeight;
+     DURATION_FACTOR[_stakeId] = _durationFactor;
      return rewardWeight; 
     }
 
@@ -179,10 +218,9 @@ contract rewardPool is Ownable{
 
     function getRewardPenalty(uint256 _rewards,uint256 stakedPeriod,uint256 _removedStake,uint256 _totalStake) public  view returns(uint256 penalty){
        if(stakedPeriod == 0) return 0;
-       if(stakedPeriod < MIN_STACKING_PERIOD ) penalty = (_rewards*50*_removedStake)/( _totalStake);
        else if (stakedPeriod >= MIN_STACKING_PERIOD && stakedPeriod < 2*MIN_STACKING_PERIOD)
        {
-           penalty= (_rewards*40*_removedStake)/( _totalStake);
+           return (_rewards*60)/(100);
        }
        else if (stakedPeriod >= 2*MIN_STACKING_PERIOD && stakedPeriod < 3*MIN_STACKING_PERIOD)
        {
@@ -196,24 +234,20 @@ contract rewardPool is Ownable{
        {
            (_rewards*10*_removedStake)/( _totalStake);
        }
-       else if(stakedPeriod > MAX_STACKING_PERIOD) penalty=0; 
+       else if(stakedPeriod >= MAX_STACKING_PERIOD) penalty=0; 
     }
     function imposeRewardPenalty(uint256 _stakeId,uint256 stakedPeriod,uint256 _removedStake,uint256 _totalStake) external returns(bool){
         require(msg.sender == STAKING_CONTRACT,"Only stacking contract can impose penalty");
-        uint256 _rewards=ACCUMALATED_REWARDS_IN_DISTRIBUTION_CYCLE[DISTRIBUTION_CYCLE][_stakeId];
-        ACCUMALATED_PENALTY_IN_DISTRIBUTION_CYCLE[DISTRIBUTION_CYCLE][_stakeId] =getRewardPenalty(_rewards, stakedPeriod,_removedStake,_totalStake);
+        uint256 _rewards = ACCUMALATED_REWARDS[_stakeId];
+        uint256 _penalty = getRewardPenalty(_rewards, stakedPeriod, _removedStake, _totalStake)/100;
+        uint256 rewardsToBeTransferedNow = ( ACCUMALATED_REWARDS[_stakeId] * _removedStake)/(_totalStake);
+        rewardsToBeTransferedNow -= _penalty ;
+        IERC20(TOKEN_ADDRESS).transfer(TREASURY,_penalty);
+        ACCUMALATED_REWARDS[_stakeId] -= rewardsToBeTransferedNow;
+        ACCUMALATED_REWARDS[_stakeId] -= _penalty;
+        address holder = StakingToken(STAKING_CONTRACT).getHolderByStakeId(_stakeId);
+        IERC20(TOKEN_ADDRESS).transfer(holder,rewardsToBeTransferedNow);
         return true;
     }
-    function sqrt(uint256 x) internal pure  returns (uint256 y)  {
-    uint256 z = (x + 1) / 2;
-    y = x;
-    while (z < y) {
-        y = z;
-        z = (x / z + z) / 2;
-    }
-
-}
-
-
-
+ 
 }
