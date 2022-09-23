@@ -7,6 +7,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 interface rewardPool{
     function imposeRewardPenalty(uint256 _stakeId,uint256 stakedPeriod,uint256 _removedStake,uint256 _totalStake) external returns(bool);
     function getCurrentEpoch() external view returns(uint256);
+    function getDuration(uint256 _stakeId) view external returns(uint256);
 }
 contract StakingToken is Ownable {
     uint256 stakeId=0;
@@ -34,7 +35,9 @@ contract StakingToken is Ownable {
     mapping(uint256 => uint256) public stakedPeriod;
     mapping(uint256 => uint256) public stakedRemovedTime;
 
-    
+    constructor() {
+        treasury = msg.sender;
+    }
     
         
     function createStake(uint256 _stakeAmount,uint256 _duration)
@@ -74,21 +77,17 @@ contract StakingToken is Ownable {
         require(msg.sender == getHolderByStakeId(_stakeId),"only stake holder can remove the stake");
         require(_stake <= getStakeAmount(_stakeId),"can remove only amount less than staked");
         uint256 penalty=0;
-        if( stakedRemovedTime[_stakeId] == 0 )
-         {
-              stakedPeriod[_stakeId] = block.timestamp - getStartTimeOfStake(_stakeId);
-              stakedRemovedTime[_stakeId] = block.timestamp;
-         }
-         else{
-            stakedPeriod[_stakeId] = block.timestamp - stakedRemovedTime[_stakeId];
-            stakedRemovedTime[_stakeId] = block.timestamp;
-         }
-
-        if(isEarlyUnstake(_stakeId)){
-                if(isDurationBound(_stakeId)) penalty = getPrincipalPenalty(_stake);
-                uint256 _totalStake=getStakeAmount(_stakeId);
-                rewardPool(rewardPoolAddress).imposeRewardPenalty(_stakeId,stakedPeriod[_stakeId],_stake,_totalStake);
-                isPenalized[_stakeId]= true;
+        stakedPeriod[_stakeId] = block.timestamp - getStartTimeOfStake(_stakeId);
+        if(isEarlyUnstake(_stakeId))
+        {
+            if(isDurationBound(_stakeId)){ 
+                uint256 _factor = rewardPool(rewardPoolAddress).getDuration(_stakeId);
+                penalty = (_factor*getPrincipalPenalty(_stake))/(10**6);
+                }
+            IERC20(tokenContract).transfer(treasury,penalty);
+            uint256 _totalStake=getStakeAmount(_stakeId);
+            rewardPool(rewardPoolAddress).imposeRewardPenalty(_stakeId,stakedPeriod[_stakeId],_stake,_totalStake);
+            isPenalized[_stakeId]= true;
         }
         bool result=IERC20(tokenContract).transfer( msg.sender , _stake - penalty);
         require(result,"error transfering tokens to holder");
@@ -129,16 +128,6 @@ contract StakingToken is Ownable {
         }
         return _totalStakes;
     }
-
-    function rewardOf(address _stakeholder) 
-        public
-        view
-        returns(uint256)
-    {
-        return rewards[_stakeholder];
-    }
-
-    
     function getStartTimeOfStake(uint256 _stakeId) view public returns(uint256){
         stake memory temp = getStakeById[_stakeId];
         return temp.stackingStartTime;
@@ -179,8 +168,8 @@ contract StakingToken is Ownable {
 
     
     function isEarlyUnstake(uint256 _stakeId) public view returns(bool){
-         if ( stakedPeriod[_stakeId] == 0 || stakedPeriod[_stakeId] >= MAX_STACKING_PERIOD) return true;
-         return false;
+         if ( stakedPeriod[_stakeId] == 0 || stakedPeriod[_stakeId] >= MAX_STACKING_PERIOD) return false;
+         return true;
       
     }
     function addRewardPoolAddress(address _rewardPool) public onlyOwner returns(bool){
