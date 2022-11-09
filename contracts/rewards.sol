@@ -18,10 +18,11 @@ interface  StakingToken {
     function getTotalNumberOfStakes() external view returns(uint256);
     function getStakedPeriod(uint256 _stakeId) external view returns(uint256);
     function getAddedEpoch(uint256 _stakeId) external returns(uint256);
+    function getstakesTillEpoch(uint256 epochNumber) external view returns(uint256);
 }
 
 contract rewardPool is Ownable{
-    uint256 POOL_START_TIME;
+    uint256 public POOL_START_TIME;
     uint256 public DISTRIBUTION_CYCLE;
     uint256 constant EPOCH_TIME=604800; // 1 WEEK
    // uint256 constant EPOCH_TIME= 120;
@@ -36,7 +37,7 @@ contract rewardPool is Ownable{
     uint256 public CURRENT_EPOCH;
     address EXCHANGE_ADDRESS;
     address USDT_ADDRESS;
-    mapping(uint256 => uint256) public REWARD_WEIGHT_TO_STAKE;
+    mapping(uint256 => mapping(uint256 => uint256)) public REWARD_WEIGHT_TO_STAKE;
     mapping(uint256 => uint256) public  EPOCH_TO_START_TIME;
     mapping(uint256 => mapping(uint256 => uint256)) public STAKED_REWARDS_PER_EPOCH;
     mapping(uint256 => uint256) public EPOCH_START_BALANCE;
@@ -46,7 +47,11 @@ contract rewardPool is Ownable{
     mapping(uint256 => uint256) DURATION_FACTOR;
     mapping(uint256 => uint256) public CLAIMED_REWARDS;
     address TREASURY;
-    
+    mapping(uint256 => uint256) rewardWeightCounter;
+    mapping(uint256 => uint256) rewardCounter;
+
+    mapping(uint256 => uint256) totalRewardWeight;
+    mapping(uint256 => mapping(uint256 => bool)) rewardCalculated;
 
 
     uint256 MAX_YIELD = 9079502202;
@@ -92,16 +97,16 @@ contract rewardPool is Ownable{
     }
     
     function finishEpoch() onlyOwner epochFinished public returns(bool){
-        uint256 len = StakingToken(STAKING_CONTRACT).getTotalNumberOfStakes();
+        require(rewardCounter[CURRENT_EPOCH]==StakingToken(STAKING_CONTRACT).getstakesTillEpoch(CURRENT_EPOCH),"ALL STAKE REWARDS ARE NOT CALCULATED");
         uint256 _allocatedRewards = calculateAllocatedRewards(CURRENT_EPOCH);
-        for(uint256 i=0;i < len;i++){
-              if(StakingToken(STAKING_CONTRACT).getAddedEpoch(i) >= CURRENT_EPOCH) break;
-              rewardOfStake(i, _allocatedRewards);
-            }
         CURRENT_EPOCH = CURRENT_EPOCH + 1;
         EPOCH_TO_START_TIME[CURRENT_EPOCH]=EPOCH_TO_START_TIME[CURRENT_EPOCH-1]+EPOCH_TIME;
         EPOCH_START_BALANCE[CURRENT_EPOCH] = EPOCH_START_BALANCE[CURRENT_EPOCH-1] - _allocatedRewards;
-
+        if(CURRENT_EPOCH % 2 == 0 && CURRENT_EPOCH != 0)
+        {
+            DISTRIBUTION_CYCLE = DISTRIBUTION_CYCLE + 1;
+            isDistributed[DISTRIBUTION_CYCLE] = true;
+        }
         return true;
 
     }
@@ -111,44 +116,34 @@ contract rewardPool is Ownable{
           
     }
 
-    function rewardOfStake(uint256 _stakeId,uint256 _epochRewards) internal  onlyOwner poolStarted returns(bool){
+    function rewardOfStake(uint256 _stakeId) public  onlyOwner poolStarted returns(bool){
+        require(rewardWeightCounter[CURRENT_EPOCH] == StakingToken(STAKING_CONTRACT).getstakesTillEpoch(CURRENT_EPOCH),"ALL THE REWARD WEIGHTS  ARE TO BE CALCULATED BEFORE REWARDING");
+        require(!rewardCalculated[_stakeId][CURRENT_EPOCH],"reward already calculated");
+        require(rewardCounter[CURRENT_EPOCH]<= StakingToken(STAKING_CONTRACT).getstakesTillEpoch(CURRENT_EPOCH),"ALL THE REWARDs ARE CALCULATED");
         uint256 _yield;
+        uint256 _epochRewards=calculateAllocatedRewards(CURRENT_EPOCH);
         uint256 _stakeAmount = StakingToken(STAKING_CONTRACT).getStakeAmount(_stakeId);
-        uint256 _rewardWeight = REWARD_WEIGHT_TO_STAKE[_stakeId];
-        uint256 _totalRewardsWeight = totalRewardWeight();
+        uint256 _rewardWeight = REWARD_WEIGHT_TO_STAKE[_stakeId][CURRENT_EPOCH];
+        uint256 _totalRewardsWeight = totalRewardWeight[CURRENT_EPOCH];
         uint256 _rewards =  (_rewardWeight * _epochRewards)/_totalRewardsWeight;
         _yield = (_rewards * (10 ** 12)) / _stakeAmount;
         
         if(_yield > MAX_YIELD ) {
             _rewards = (_stakeAmount * MAX_YIELD) /  (10 ** 12) ;
         }
-
         ACCUMALATED_REWARDS[_stakeId] = ACCUMALATED_REWARDS[_stakeId]+_rewards;
+        rewardCalculated[_stakeId][CURRENT_EPOCH]=true;
+        if(CURRENT_EPOCH % 2 == 0 && CURRENT_EPOCH != 0){
+              uint256 _rewardsGiven = getRewardsToGive(_stakeId);
+              CLAIMABLE_REWARDS[_stakeId] = _rewardsGiven;
+              CLAIMABLE_REWARDS[_stakeId] -= CLAIMED_REWARDS[_stakeId];
+        }
+        rewardCounter[CURRENT_EPOCH]++;
 
         return true;
     }
 
-    function distributeRewards() public onlyOwner isDistributionReady poolStarted returns(uint256){
-        uint256 distributedRewards = 0;
-        uint256 len = StakingToken(STAKING_CONTRACT).getTotalNumberOfStakes();
-        for(uint256 i=0;i < len;i++)
-        {
-              if(StakingToken(STAKING_CONTRACT).getAddedEpoch(i) >= CURRENT_EPOCH) break;
-              uint256 _rewards = getRewardsToGive(i);
-              if(_rewards == 0) continue ;
-              CLAIMABLE_REWARDS[i] = _rewards;
-              CLAIMABLE_REWARDS[i] -= CLAIMED_REWARDS[i];
-              //address holder = StakingToken(STAKING_CONTRACT).getHolderByStakeId(i);
-              //bool result = IERC20(TOKEN_ADDRESS).transfer(holder,_rewards);
-              //require(result,"ERROR : transferring rewards");
-              distributedRewards= distributedRewards + _rewards;      
-        }
-        DISTRIBUTION_CYCLE = DISTRIBUTION_CYCLE + 1;
-        isDistributed[DISTRIBUTION_CYCLE] = true;
-        
-        return distributedRewards;
-            
-    }
+    
 
     function claimRewards(uint256 _stakeId,uint256 _rewardToClaim) public returns(bool){
         require(msg.sender == StakingToken(STAKING_CONTRACT).getHolderByStakeId(_stakeId),"ONLY HOLDER CLAIM REWARDS");
@@ -192,25 +187,19 @@ contract rewardPool is Ownable{
                             uint256 _mintingFactor,
                             uint256 _referalFactor,
                             uint256 _engagementFactor,
-                            uint256 _durationFactor) public epochFinished returns(uint256)
+                            uint256 _durationFactor) public epochFinished onlyOwner returns(uint256)
     {
      require(StakingToken(STAKING_CONTRACT).getAddedEpoch(_stakeId) < CURRENT_EPOCH,"THIS STAKE SHOULD BE CONSIDERED FOR NEXT EPOCH");
+     require(rewardWeightCounter[CURRENT_EPOCH] <= StakingToken(STAKING_CONTRACT).getstakesTillEpoch(CURRENT_EPOCH),"ALL THE REWARD WEIGTHS ARE CALCULATED");
+     require(REWARD_WEIGHT_TO_STAKE[_stakeId][CURRENT_EPOCH] == 0,"WEIGHT OF THIS STAKE ALREADY CALCULATED");
      uint256 stakeAmount = StakingToken(STAKING_CONTRACT).getStakeAmount(_stakeId);
      if(CURRENT_EPOCH % 12 != 1 ) _engagementFactor = 10 ** 6;
-     uint256 rewardWeight = (_mintingFactor * _referalFactor * _engagementFactor * _durationFactor * stakeAmount) ;
-     REWARD_WEIGHT_TO_STAKE[_stakeId] = rewardWeight;
+     uint256 rewardWeight = (_mintingFactor * _referalFactor * _engagementFactor * _durationFactor * stakeAmount);
+     REWARD_WEIGHT_TO_STAKE[_stakeId][CURRENT_EPOCH] = rewardWeight;
      DURATION_FACTOR[_stakeId] = _durationFactor;
+     rewardWeightCounter[CURRENT_EPOCH]++;
+     totalRewardWeight[CURRENT_EPOCH]+= REWARD_WEIGHT_TO_STAKE[_stakeId][CURRENT_EPOCH];
      return rewardWeight; 
-    }
-
-    function totalRewardWeight() public view  returns(uint256)
-    {
-        uint256 len = StakingToken(STAKING_CONTRACT).getTotalNumberOfStakes();
-        uint256 _totalRewardWeight=0;
-        for(uint256 i=0;i<len;i++){
-            _totalRewardWeight= _totalRewardWeight + REWARD_WEIGHT_TO_STAKE[i] ;       
-         }
-        return  _totalRewardWeight;
     }
      
       function getCurrentEpoch() view  public returns(uint256){
@@ -250,5 +239,8 @@ contract rewardPool is Ownable{
         IERC20(TOKEN_ADDRESS).transfer(holder,rewardsToBeTransferedNow);
         return true;
     }
- 
+    function getBlockStamp() view public returns(uint256){
+          return block.timestamp;
+    }
 }
+
