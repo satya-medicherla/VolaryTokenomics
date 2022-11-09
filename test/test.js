@@ -37,7 +37,11 @@ describe('test volary contract deployment',(accounts) => {
         
     })
 
-    it("checks stacking works",async()=>{
+    it("stacking and reward testing",async()=>{
+        /**
+         * adding stakes two stakes 
+         * one with duration and other with no stakes
+         */
         await volary.approve(stacking.address,"200000000000000000000",{from : accounts[1]})
         await volary.approve(stacking.address,"100000000000000000000",{from : accounts[2]})
         await stacking.createStake("200000000000000000000",0,{from : accounts[1]});
@@ -47,55 +51,91 @@ describe('test volary contract deployment',(accounts) => {
         await stacking.createStake("100000000000000000000",13305900,{from : accounts[2]});
         assert.equal(await stacking.isStakeHolder(accounts[2]),true);
         assert.equal(await stacking.getStakeAmount(1),"100000000000000000000");
+        assert.equal(await rewardPool.CURRENT_EPOCH(),0)
         await rewardPool.startPool();
         assert.equal(await rewardPool.CURRENT_EPOCH(),1);
         await ethers.provider.send('evm_increaseTime', [epochTime-2]);
         await ethers.provider.send('evm_mine');
+        assert.equal(await stacking.getstakesTillEpoch(1),2)
+        /*
+        reward pool reverts when all the stakes rewards are not calculated
+        **/
         await truffleAssert.reverts(rewardPool.calculateRewardWeight(0,1100000,1200000,1000000,1000000),"VM Exception while processing transaction: reverted with reason string ' epoch not completed'");
-        await truffleAssert.reverts(rewardPool.finishEpoch(),"VM Exception while processing transaction: reverted with panic code 0x12 (Division or modulo division by zero");
+        await truffleAssert.reverts(rewardPool.finishEpoch(),"VM Exception while processing transaction: reverted with reason string 'ALL STAKE REWARDS ARE NOT CALCULATED'");
         await ethers.provider.send('evm_increaseTime', [epochTime]);
         await ethers.provider.send('evm_mine');
         await rewardPool.calculateRewardWeight(0,1100000,1200000,1000000,1000000);
+        /**
+         * cant finish the epoch before the rewards of all the stakes are calculated
+         */
+        await truffleAssert.reverts(rewardPool.finishEpoch());
         await rewardPool.calculateRewardWeight(1,1300000,1500000,1000000,2432670);
+        await rewardPool.rewardOfStake(0);
+        await rewardPool.rewardOfStake(1);
         await rewardPool.finishEpoch();
+        /**
+         *  accumalted rewards after epoch is finished
+         */
         assert.equal(await rewardPool.CURRENT_EPOCH(),2);
+        assert.equal(await stacking.getstakesTillEpoch(2),2)
         balance= await rewardPool.ACCUMALATED_REWARDS(0)
-        assert.equal(balance.toString(),750842412276273440)
+        assert.equal(balance.toString(),"750842412276273440")
         balance=await rewardPool.ACCUMALATED_REWARDS(1)
         assert.equal(balance.toString(),"907950220200000000")
         
+        /**
+         *  checks only valid stakeholder can remove valid stake amount
+         */
         await truffleAssert.reverts(stacking.removeStake(1,"50000000000000000000"),"VM Exception while processing transaction: reverted with reason string 'only stake holder can remove the stake'");
         await truffleAssert.reverts(stacking.removeStake(1,"100000000000000000001",{from : accounts[2]}),"VM Exception while processing transaction: reverted with reason string 'can remove only amount less than staked'");
-        
+        /**
+         * remove stake functionality check
+         */
         await stacking.removeStake(1,"50000000000000000000",{from : accounts[2]});
-
+        /**
+         * checks if principal and reward penalty is implemented correctly
+         */
         balance= await volary.balanceOf(accounts[2]);
 
         assert.equal(balance.toString(),"44372300110100000000")
         balance=await rewardPool.ACCUMALATED_REWARDS(1)
         assert.equal(balance.toString(),"453975110100000000");
-
+       /**
+        * second epoch testing
+        */
         assert.equal(await rewardPool.CURRENT_EPOCH(),2);
         // await ethers.provider.send('evm_increaseTime', [epochTime-2]);
         // await ethers.provider.send('evm_mine');
-        // await truffleAssert.reverts(rewardPool.calculateRewardWeight(0,1100000,1200000,1000000,1000000),"VM Exception while processing transaction: reverted with reason string ' epoch not completed'");
-        // await truffleAssert.reverts(rewardPool.finishEpoch(),"VM Exception while processing transaction: reverted with panic code 0x12 (Division or modulo division by zero");
+        let time 
+        time = await rewardPool.POOL_START_TIME()
+        let time1 = await rewardPool.EPOCH_TO_START_TIME(1);
+        assert.equal(time.toString(),time1.toString());
+        let time2 = await rewardPool.EPOCH_TO_START_TIME(2);
+        let difTime = time2-time1;
+        let blockTime = await rewardPool.getBlockStamp();
+        
+        assert.equal(blockTime >= time1+604800,true);
+        //await truffleAssert.reverts(rewardPool.calculateRewardWeight(0,1100000,1200000,1000000,1000000),"VM Exception while processing transaction: reverted with reason string ' epoch not completed'");
+        await truffleAssert.reverts(rewardPool.finishEpoch());
         await ethers.provider.send('evm_increaseTime', [epochTime]);
         await ethers.provider.send('evm_mine');
+         
         await rewardPool.calculateRewardWeight(0,1100000,1200000,1000000,1000000);
         await rewardPool.calculateRewardWeight(1,1300000,1500000,1000000,2432670);
+        await rewardPool.rewardOfStake(0);
+        await rewardPool.rewardOfStake(1);
         await rewardPool.finishEpoch();
-        assert.equal(await rewardPool.CURRENT_EPOCH(),3);
-        await rewardPool.distributeRewards();
-        balance= await rewardPool.ACCUMALATED_REWARDS(0)
-        assert.equal(balance.toString(),"1854697079210106748")
-        balance=await rewardPool.ACCUMALATED_REWARDS(1)
-        assert.equal(balance.toString(),"907950220200000000")
         assert.equal(await rewardPool.DISTRIBUTION_CYCLE(),2)
         balance= await rewardPool.CLAIMABLE_REWARDS(0)
         assert.equal(balance.toString(),"927348539605053374")
         balance=await rewardPool.CLAIMABLE_REWARDS(1)
         assert.equal(balance.toString(),"453975110100000000")
+        assert.equal(await rewardPool.CURRENT_EPOCH(),3);
+        balance= await rewardPool.ACCUMALATED_REWARDS(0)
+        assert.equal(balance.toString(),"1854697079210106748")
+        balance=await rewardPool.ACCUMALATED_REWARDS(1)
+        assert.equal(balance.toString(),"907950220200000000")
+        
         truffleAssert.reverts(rewardPool.claimRewards(0,"927348539605053374",{from:accounts[0]}));
         truffleAssert.reverts(rewardPool.claimRewards(1,"927348539605053375",{from:accounts[0]}));
 
@@ -108,14 +148,16 @@ describe('test volary contract deployment',(accounts) => {
         
 
         assert.equal(await rewardPool.CURRENT_EPOCH(),3);
-        // await ethers.provider.send('evm_increaseTime', [epochTime-2]);
-        // await ethers.provider.send('evm_mine');
-        // await truffleAssert.reverts(rewardPool.calculateRewardWeight(0,1100000,1200000,1000000,1000000),"VM Exception while processing transaction: reverted with reason string ' epoch not completed'");
-        // await truffleAssert.reverts(rewardPool.finishEpoch(),"VM Exception while processing transaction: reverted with panic code 0x12 (Division or modulo division by zero");
+        await ethers.provider.send('evm_increaseTime', [epochTime-2]);
+        await ethers.provider.send('evm_mine');
+        await truffleAssert.reverts(rewardPool.rewardOfStake(0));
+        await truffleAssert.reverts(rewardPool.finishEpoch());
         await ethers.provider.send('evm_increaseTime', [epochTime]);
         await ethers.provider.send('evm_mine');
         await rewardPool.calculateRewardWeight(0,1100000,1200000,1000000,1000000);
         await rewardPool.calculateRewardWeight(1,1300000,1500000,1000000,2432670);
+        await rewardPool.rewardOfStake(0);
+        await rewardPool.rewardOfStake(1);
         await rewardPool.finishEpoch();
         assert.equal(await rewardPool.CURRENT_EPOCH(),4);
 
@@ -125,14 +167,16 @@ describe('test volary contract deployment',(accounts) => {
         assert.equal(balance.toString(),"1361925330300000000")
 
         assert.equal(await rewardPool.CURRENT_EPOCH(),4);
-        // await ethers.provider.send('evm_increaseTime', [epochTime-2]);
-        // await ethers.provider.send('evm_mine');
-        // await truffleAssert.reverts(rewardPool.calculateRewardWeight(0,1100000,1200000,1000000,1000000),"VM Exception while processing transaction: reverted with reason string ' epoch not completed'");
-        // await truffleAssert.reverts(rewardPool.finishEpoch(),"VM Exception while processing transaction: reverted with panic code 0x12 (Division or modulo division by zero");
+        await ethers.provider.send('evm_increaseTime', [epochTime-2]);
+        await ethers.provider.send('evm_mine');
+        await truffleAssert.reverts(rewardPool.rewardOfStake(0));
+        await truffleAssert.reverts(rewardPool.finishEpoch());
         await ethers.provider.send('evm_increaseTime', [epochTime]);
         await ethers.provider.send('evm_mine');
         await rewardPool.calculateRewardWeight(0,1100000,1200000,1000000,1000000);
         await rewardPool.calculateRewardWeight(1,1300000,1500000,1000000,2432670);
+        await rewardPool.rewardOfStake(0);
+        await rewardPool.rewardOfStake(1);
         await rewardPool.finishEpoch();
         assert.equal(await rewardPool.CURRENT_EPOCH(),5);
 
@@ -141,7 +185,7 @@ describe('test volary contract deployment',(accounts) => {
         balance=await rewardPool.ACCUMALATED_REWARDS(1)
         assert.equal(balance.toString(),"1815900440400000000")
 
-        await rewardPool.distributeRewards();
+        // await rewardPool.distributeRewards();
 
         balance= await rewardPool.CLAIMABLE_REWARDS(0)
         assert.equal(balance.toString(),"1100379958732532322")
@@ -152,15 +196,7 @@ describe('test volary contract deployment',(accounts) => {
         assert.equal(balance.toString(),"927348539605053374")
         balance=await rewardPool.CLAIMED_REWARDS(1)
         assert.equal(balance.toString(),"0")
-
-        
-
-
-
-        
-        
         
     })
 
 })
-
