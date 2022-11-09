@@ -34,7 +34,7 @@ contract StakingToken is Ownable {
     mapping(address => stake[]) public getStakesOfAddress;
     mapping(uint256 => uint256) public stakedPeriod;
     mapping(uint256 => uint256) public stakedRemovedTime;
-
+    mapping(uint256 => uint256) public stakesAddedInEpoch;
     constructor() {
         treasury = msg.sender;
     }
@@ -46,6 +46,7 @@ contract StakingToken is Ownable {
         require(rewardPoolAddress != address(0),"REWARD POOL NOT ADDED");
         uint256 CURRENT_EPOCH = rewardPool(rewardPoolAddress).getCurrentEpoch();
         addedInEpoch[stakeId] = CURRENT_EPOCH;
+        stakesAddedInEpoch[CURRENT_EPOCH]++;
         bool result=IERC20(tokenContract).transferFrom(msg.sender,address(this),_stakeAmount);
         require(result,"stake transfer failed");
         stake storage newStake=getStakeById[stakeId];
@@ -60,22 +61,24 @@ contract StakingToken is Ownable {
         
     }
     function getStackerLevel(address _stakeholder) public view returns(string memory level) {
-        if(stakeOf(_stakeholder) < SILVER_LEVEL_TOKENS)  level="none";
-        else if (stakeOf(_stakeholder)  >= SILVER_LEVEL_TOKENS)  level="sliver";
-        else if (stakeOf(_stakeholder)  >= SILVER_LEVEL_TOKENS*10)  level="gold";
-        else if (stakeOf(_stakeholder)  >= SILVER_LEVEL_TOKENS*100)  level="diamond";
-        else if (stakeOf(_stakeholder)  >= SILVER_LEVEL_TOKENS*1000)  level="platinum";
-
-        return level;   
-    }
+    uint256 _stakeAmount = stakeOf(_stakeholder);
+    if(_stakeAmount < SILVER_LEVEL_TOKENS)  level="none";
+    else if (_stakeAmount  >= SILVER_LEVEL_TOKENS*1000)  level="platinum";
+    else if (_stakeAmount  >= SILVER_LEVEL_TOKENS*100)  level="diamond";
+    else if (_stakeAmount  >= SILVER_LEVEL_TOKENS*10)  level="gold";
+    else if (_stakeAmount >= SILVER_LEVEL_TOKENS)  level="sliver";
+    
+    return level;   
+}
 
     
 
     function removeStake(uint256 _stakeId,uint256 _stake)
         public returns(bool)
     {
+        uint256 _totalStake=getStakeAmount(_stakeId);
         require(msg.sender == getHolderByStakeId(_stakeId),"only stake holder can remove the stake");
-        require(_stake <= getStakeAmount(_stakeId),"can remove only amount less than staked");
+        require(_stake <= _totalStake,"can remove only amount less than staked");
         uint256 penalty=0;
         stakedPeriod[_stakeId] = block.timestamp - getStartTimeOfStake(_stakeId);
         if(isEarlyUnstake(_stakeId))
@@ -85,7 +88,6 @@ contract StakingToken is Ownable {
                 penalty = (_factor*getPrincipalPenalty(_stake))/(10**6);
                 }
             IERC20(tokenContract).transfer(treasury,penalty);
-            uint256 _totalStake=getStakeAmount(_stakeId);
             rewardPool(rewardPoolAddress).imposeRewardPenalty(_stakeId,stakedPeriod[_stakeId],_stake,_totalStake);
             isPenalized[_stakeId]= true;
         }
@@ -148,7 +150,13 @@ contract StakingToken is Ownable {
         stake memory temp = getStakeById[_stakeId];
         return temp.stakeAmount;
     }
-
+    function getstakesTillEpoch(uint256 epochNumber) public view returns(uint256){
+        uint256 result = 0;
+        for(uint256 i=0;i<epochNumber;i++){
+            result+=stakesAddedInEpoch[i];
+        }
+        return result;
+    }
     function getDuration(uint256 _stakeId) public view returns(uint256){
         stake memory temp = getStakeById[_stakeId];
         return temp.duration;
