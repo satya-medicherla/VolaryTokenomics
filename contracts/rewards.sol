@@ -72,12 +72,6 @@ contract rewardPool is Ownable{
         require(block.timestamp >= EPOCH_TO_START_TIME[CURRENT_EPOCH]+EPOCH_TIME," epoch not completed");
         _;
     }
-    modifier isDistributionReady{
-        require(
-        CURRENT_EPOCH % 2 == 1 && CURRENT_EPOCH != 1
-        ,"Rewards can be distributed only after 4 epochs");
-        _;
-    }
     modifier poolStarted{
         require(CURRENT_EPOCH != 0 && DISTRIBUTION_CYCLE != 0,
                 "POOL NOT STARTED");
@@ -243,4 +237,3 @@ contract rewardPool is Ownable{
           return block.timestamp;
     }
 }
-
