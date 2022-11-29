@@ -35,8 +35,9 @@ contract StakingToken is Ownable {
     mapping(uint256 => uint256) public stakedPeriod;
     mapping(uint256 => uint256) public stakedRemovedTime;
     mapping(uint256 => uint256) public stakesAddedInEpoch;
-    constructor() {
+    constructor(address _tokenContract) {
         treasury = msg.sender;
+        tokenContract = _tokenContract;
     }
     
         
@@ -118,18 +119,6 @@ contract StakingToken is Ownable {
         }
         return totalStake;
     }
-
-    function totalStakes()
-        public
-        view
-        returns(uint256)
-    {
-        uint256 _totalStakes = 0;
-        for(uint256 i = 0; i<stakeId; i++){
-            _totalStakes=_totalStakes+getStakeAmount(stakeId);
-        }
-        return _totalStakes;
-    }
     function getStartTimeOfStake(uint256 _stakeId) view public returns(uint256){
         stake memory temp = getStakeById[_stakeId];
         return temp.stackingStartTime;
@@ -184,8 +173,5 @@ contract StakingToken is Ownable {
         rewardPoolAddress=_rewardPool;
         return true;
     }
-    function addTokenContract(address _tokenContract)public onlyOwner returns(bool){
-        tokenContract = _tokenContract;
-        return true;
-    }
+    
 }
