@@ -360,7 +360,7 @@ contract FeeRouter is Ownable {
         returns (uint256[] memory amounts)
     {
         require(path[0] == WETH, "UniswapV2Router: INVALID_PATH");
-        
+        require(amountIn <= msg.value);
         amounts = UniswapV2Library.getAmountsOut(factory, amountIn, path, hash);
         require(
             amounts[amounts.length - 1] >= amountOutMin,
@@ -427,6 +427,7 @@ contract FeeRouter is Ownable {
         bytes32 hash
     ) external payable virtual ensure(deadline) {
         require(path[0] == WETH, "UniswapV2Router: INVALID_PATH");
+        require(amountIn <= msg.value);
 
         IWETH(WETH).deposit{value: amountIn}();
         assert(

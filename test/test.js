@@ -1,6 +1,6 @@
 const stackingContract = artifacts.require("contracts/stacking.sol:StakingToken");
 const rewardsContract = artifacts.require("contracts/rewards.sol:rewardPool");
-const tokenContract = artifacts.require("Volary")
+const tokenContract = artifacts.require("Volary");
 const { assert } = require('chai');
 const truffleAssert = require('truffle-assertions');
 const { ethers, network } = require("hardhat");
@@ -15,15 +15,16 @@ describe('test volary contract deployment',(accounts) => {
     before(async function () {
         accounts = await web3.eth.getAccounts();
         volary = await tokenContract.new();
-        stacking = await stackingContract.new();
+        stacking = await stackingContract.new(volary.address);
         rewardPool = await rewardsContract.new(volary.address,stacking.address,
-            volary.address,volary.address,accounts[0]);
-            await stacking.addRewardPoolAddress(rewardPool.address);
-            await stacking.addTokenContract(volary.address);
-            await volary.transfer(rewardPool.address,"1000000000000000000000");
-            await volary.transfer(accounts[1],"200000000000000000000");
-            await volary.transfer(accounts[2],"100000000000000000000");
-
+        volary.address,volary.address,accounts[0]);
+        await truffleAssert.reverts(stacking.createStake("1900",0))
+        await truffleAssert.reverts(stacking.addRewardPoolAddress(rewardPool.address,{from : accounts[8]}))
+        await stacking.addRewardPoolAddress(rewardPool.address)
+        await truffleAssert.reverts(stacking.createStake("1900",0))
+        await volary.transfer(rewardPool.address,"1000000000000000000000");
+        await volary.transfer(accounts[1],"200000000000000000000");
+        await volary.transfer(accounts[2],"100000000000000000000");
     });
 
     it('checks if deployed address is owner',async()=>{
@@ -37,7 +38,12 @@ describe('test volary contract deployment',(accounts) => {
         
     })
 
-    it("checks stacking works",async()=>{
+    it("stacking and reward testing",async()=>{
+        /**
+         * step 1 : 
+         * adding stakes two stakes 
+         * one with duration and other with no stakes
+         */
         await volary.approve(stacking.address,"200000000000000000000",{from : accounts[1]})
         await volary.approve(stacking.address,"100000000000000000000",{from : accounts[2]})
         await stacking.createStake("200000000000000000000",0,{from : accounts[1]});
@@ -47,120 +53,345 @@ describe('test volary contract deployment',(accounts) => {
         await stacking.createStake("100000000000000000000",13305900,{from : accounts[2]});
         assert.equal(await stacking.isStakeHolder(accounts[2]),true);
         assert.equal(await stacking.getStakeAmount(1),"100000000000000000000");
+        assert.equal(await rewardPool.CURRENT_EPOCH(),0);
+        const sampleSign = "0x993dab3dd91f5c6dc28e17439be475478f5635c92a56e17e82349d3fb2f166196f466c0b4e0c146f285204f0dcb13e5ae67bc33f4b888ec32dfe0a063e8f3f781b"
+        await truffleAssert.reverts(rewardPool.rewardOfStake(0,"12345",sampleSign),"POOL NOT STARTED");
+        await truffleAssert.reverts(rewardPool.rewardOfStakeByAdmin(0,"12345","23"),"POOL NOT STARTED");
+
+        await truffleAssert.reverts(rewardPool.startPool({from : accounts[1]}))
         await rewardPool.startPool();
+        await truffleAssert.reverts(rewardPool.startPool(),"POOL ALREADY STARTED")
         assert.equal(await rewardPool.CURRENT_EPOCH(),1);
-        await ethers.provider.send('evm_increaseTime', [epochTime-2]);
-        await ethers.provider.send('evm_mine');
-        await truffleAssert.reverts(rewardPool.calculateRewardWeight(0,1100000,1200000,1000000,1000000),"VM Exception while processing transaction: reverted with reason string ' epoch not completed'");
-        await truffleAssert.reverts(rewardPool.finishEpoch(),"VM Exception while processing transaction: reverted with panic code 0x12 (Division or modulo division by zero");
+        
+        
+        assert.equal(await stacking.getstakesTillEpoch(1),2);
+
+        await truffleAssert.reverts(rewardPool.finishEpoch(),"epoch not completed");
+         
+        /*
+        reward pool reverts when all the stakes rewards are not calculated
+        **/
+
+        const signers = await ethers.getSigners();
+
+        let stakeOneRewards = "7890000000000000";
+
+        let stakeOneSign = await signers[0].signMessage(stakeOneRewards);//0.00789 vlry
+
+        let errorSign = await signers[2].signMessage(stakeOneRewards);
+
+
+        await truffleAssert.reverts(rewardPool.rewardOfStake(0,stakeOneRewards,stakeOneSign,{from : accounts[1]}),"epoch not completed");
         await ethers.provider.send('evm_increaseTime', [epochTime]);
         await ethers.provider.send('evm_mine');
-        await rewardPool.calculateRewardWeight(0,1100000,1200000,1000000,1000000);
-        await rewardPool.calculateRewardWeight(1,1300000,1500000,1000000,2432670);
-        await rewardPool.finishEpoch();
-        assert.equal(await rewardPool.CURRENT_EPOCH(),2);
-        balance= await rewardPool.ACCUMALATED_REWARDS(0)
-        assert.equal(balance.toString(),750842412276273440)
-        balance=await rewardPool.ACCUMALATED_REWARDS(1)
-        assert.equal(balance.toString(),"907950220200000000")
+        await truffleAssert.reverts(rewardPool.rewardOfStake(0,stakeOneRewards,stakeOneSign),"not stake holder");
+        await truffleAssert.reverts(rewardPool.rewardOfStake(0,stakeOneRewards,errorSign,{from : accounts[1]}),"signature mismatch");
+
+        let errMsg = "abcdefgh";
+        errorSign = await signers[0].signMessage(errMsg);
+        await truffleAssert.reverts(rewardPool.rewardOfStake(0,errMsg,errorSign,{from : accounts[1]}),"rewards type mismatch");
+
+
+        await rewardPool.rewardOfStake(0,stakeOneRewards,stakeOneSign,{from : accounts[1]});
+
+        await truffleAssert.reverts(rewardPool.rewardOfStake(0,stakeOneRewards,stakeOneSign,{from : accounts[1]}),"REWARD FOR THIS EPOCH IS SET")
+
+
+
+        balance = await rewardPool.ACCUMALATED_REWARDS(0);
+
+        assert.equal(balance.toString(),stakeOneRewards);        
+        await truffleAssert.reverts(rewardPool.finishEpoch(),"VM Exception while processing transaction: reverted with reason string 'ALL STAKE REWARDS ARE NOT CALCULATED'");
         
+
+        let stakeTwoRewards = "127665435260000";
+
+        let stakeTwoSign = await signers[0].signMessage(stakeTwoRewards);
+        
+        await truffleAssert.reverts(rewardPool.rewardOfStake(1,stakeTwoRewards,stakeOneSign,{from : accounts[2]}),"signature mismatch");
+
+        await rewardPool.rewardOfStake(1,stakeTwoRewards,stakeTwoSign,{from : accounts[2]});
+        
+        balance = await rewardPool.ACCUMALATED_REWARDS(1);
+
+        assert.equal(balance.toString(),stakeTwoRewards); 
+
+        await truffleAssert.reverts(rewardPool.finishEpoch({from : accounts[1]}));
+
+        await rewardPool.finishEpoch();
+       
+
+        assert.equal(await rewardPool.CURRENT_EPOCH(),2);
+        assert.equal(await stacking.getstakesTillEpoch(2),2)
+    
+        
+        /**
+         *  checks only valid stakeholder can remove valid stake amount
+         */
         await truffleAssert.reverts(stacking.removeStake(1,"50000000000000000000"),"VM Exception while processing transaction: reverted with reason string 'only stake holder can remove the stake'");
         await truffleAssert.reverts(stacking.removeStake(1,"100000000000000000001",{from : accounts[2]}),"VM Exception while processing transaction: reverted with reason string 'can remove only amount less than staked'");
-        
+        /**
+         * remove stake functionality check
+         */
         await stacking.removeStake(1,"50000000000000000000",{from : accounts[2]});
-
+        /**
+         * checks if principal and reward penalty is implemented correctly
+         */
         balance= await volary.balanceOf(accounts[2]);
 
-        assert.equal(balance.toString(),"44372300110100000000")
+        assert.equal(balance.toString(),"50000063832717630000")
         balance=await rewardPool.ACCUMALATED_REWARDS(1)
-        assert.equal(balance.toString(),"453975110100000000");
+        assert.equal(balance.toString(),"63832717630000");
 
-        assert.equal(await rewardPool.CURRENT_EPOCH(),2);
-        // await ethers.provider.send('evm_increaseTime', [epochTime-2]);
-        // await ethers.provider.send('evm_mine');
-        // await truffleAssert.reverts(rewardPool.calculateRewardWeight(0,1100000,1200000,1000000,1000000),"VM Exception while processing transaction: reverted with reason string ' epoch not completed'");
-        // await truffleAssert.reverts(rewardPool.finishEpoch(),"VM Exception while processing transaction: reverted with panic code 0x12 (Division or modulo division by zero");
+        /**
+         * second epoch testing
+         */
+   
+        stakeOneRewards = "89763200000000";
+        stakeOneSign = await signers[0].signMessage(stakeOneRewards);
+        let gasFeePenalty = "12008"
+        assert.equal( await rewardPool.getCurrentEpoch(),2)
+        await truffleAssert.reverts(rewardPool.rewardOfStake(0,stakeOneRewards,stakeOneSign,{from : accounts[1]}),"epoch not completed");
+        await truffleAssert.reverts(rewardPool.rewardOfStakeByAdmin(0,stakeOneRewards,gasFeePenalty),"epoch not completed");
         await ethers.provider.send('evm_increaseTime', [epochTime]);
         await ethers.provider.send('evm_mine');
-        await rewardPool.calculateRewardWeight(0,1100000,1200000,1000000,1000000);
-        await rewardPool.calculateRewardWeight(1,1300000,1500000,1000000,2432670);
-        await rewardPool.finishEpoch();
-        assert.equal(await rewardPool.CURRENT_EPOCH(),3);
-        await rewardPool.distributeRewards();
-        balance= await rewardPool.ACCUMALATED_REWARDS(0)
-        assert.equal(balance.toString(),"1854697079210106748")
-        balance=await rewardPool.ACCUMALATED_REWARDS(1)
-        assert.equal(balance.toString(),"907950220200000000")
-        assert.equal(await rewardPool.DISTRIBUTION_CYCLE(),2)
-        balance= await rewardPool.CLAIMABLE_REWARDS(0)
-        assert.equal(balance.toString(),"927348539605053374")
-        balance=await rewardPool.CLAIMABLE_REWARDS(1)
-        assert.equal(balance.toString(),"453975110100000000")
-        truffleAssert.reverts(rewardPool.claimRewards(0,"927348539605053374",{from:accounts[0]}));
-        truffleAssert.reverts(rewardPool.claimRewards(1,"927348539605053375",{from:accounts[0]}));
 
-        await rewardPool.claimRewards(0,"927348539605053374",{from:accounts[1]})
+        await rewardPool.rewardOfStake(0,stakeOneRewards,stakeOneSign,{from : accounts[1]});
+
+        balance = await rewardPool.ACCUMALATED_REWARDS(0);
+        assert.equal(balance.toString(),"7979763200000000");
 
         balance = await rewardPool.CLAIMABLE_REWARDS(0);
+        assert.equal(balance.toString(),"3989881600000000");
+
+        stakeTwoRewards = "1256700000000000";
+        stakeTwoSign = await signers[0].signMessage(stakeTwoRewards);
+
+        await truffleAssert.reverts(rewardPool.rewardOfStakeByAdmin(1,stakeOneRewards,gasFeePenalty,{from : accounts[1]}),"Ownable: caller is not the owner");
+
+        await truffleAssert.reverts(rewardPool.rewardOfStakeByAdmin(0,stakeOneRewards,gasFeePenalty),"REWARD FOR THIS EPOCH IS SET");
+
+        await rewardPool.rewardOfStakeByAdmin(1,stakeOneRewards,gasFeePenalty);
+
+        balance = await rewardPool.ACCUMALATED_REWARDS(1);
+        assert.equal(balance.toString(),"153595917617992");
+
+        balance = await rewardPool.CLAIMABLE_REWARDS(1);
+        assert.equal(balance.toString(),"76797958808996");
+
+        await rewardPool.finishEpoch();
+
+        /**
+         * epoch 3 testing
+         */
+
+         assert.equal( await rewardPool.getCurrentEpoch(),3)
+
+         stakeOneRewards = "670000000000000";
+         stakeOneSign = await signers[0].signMessage(stakeOneRewards);
+         gasFeePenalty = "17908"
+ 
+         await truffleAssert.reverts(rewardPool.rewardOfStake(0,stakeOneRewards,stakeOneSign,{from : accounts[1]}),"epoch not completed");
+         await truffleAssert.reverts(rewardPool.rewardOfStakeByAdmin(0,stakeOneRewards,gasFeePenalty),"epoch not completed");
+         await ethers.provider.send('evm_increaseTime', [epochTime]);
+         await ethers.provider.send('evm_mine');
+ 
+         await rewardPool.rewardOfStake(0,stakeOneRewards,stakeOneSign,{from : accounts[1]});
+ 
+         balance = await rewardPool.ACCUMALATED_REWARDS(0);
+         assert.equal(balance.toString(),"8649763200000000");
+ 
+         balance = await rewardPool.CLAIMABLE_REWARDS(0);
+         assert.equal(balance.toString(),"3989881600000000");
+ 
+         stakeTwoRewards = "987000000000000";
+         stakeTwoSign = await signers[0].signMessage(stakeTwoRewards);
+ 
+         await truffleAssert.reverts(rewardPool.rewardOfStakeByAdmin(1,stakeOneRewards,gasFeePenalty,{from : accounts[1]}),"Ownable: caller is not the owner");
+ 
+         await truffleAssert.reverts(rewardPool.rewardOfStakeByAdmin(0,stakeOneRewards,gasFeePenalty),"REWARD FOR THIS EPOCH IS SET");
+ 
+         await rewardPool.rewardOfStakeByAdmin(1,stakeOneRewards,gasFeePenalty);
+ 
+         balance = await rewardPool.ACCUMALATED_REWARDS(1);
+         assert.equal(balance.toString(),"823595917600084");
+ 
+         balance = await rewardPool.CLAIMABLE_REWARDS(1);
+         assert.equal(balance.toString(),"76797958808996");
+ 
+         await rewardPool.finishEpoch();
+
+         /**
+          * into fourth epoch
+          */
+         assert.equal( await rewardPool.getCurrentEpoch(),4)
+
+         let activeStakes = await stacking.getactiveStakesTillEpoch(4);
+         assert.equal(activeStakes,2)
+
+         const totalStakeOfFirst = await stacking.getStakeAmount(0);
+         
+         await stacking.removeStake(0,totalStakeOfFirst.toString(),{from : accounts[1]});
+
+         activeStakes = await stacking.getactiveStakesTillEpoch(4);
+         assert.equal(activeStakes,1);
+
+         balance = await stacking.getStakeAmount(0)
+
+         assert.equal(balance.toString(),0);
+
+         await ethers.provider.send('evm_increaseTime', [epochTime]);
+         await ethers.provider.send('evm_mine');
+
+         await truffleAssert.reverts(rewardPool.rewardOfStake(0,stakeOneRewards,stakeOneSign,{from : accounts[1]}),"STAKE DOESNT EXISTS");
+         await truffleAssert.reverts(rewardPool.rewardOfStakeByAdmin(0,stakeOneRewards,gasFeePenalty),"STAKE DOESNT EXISTS");
+
+         await truffleAssert.reverts(rewardPool.claimRewards(0,"3989881600000000"),"ONLY HOLDER CLAIM REWARDS");
+         await truffleAssert.reverts(rewardPool.claimRewards(0,"3989881600000001",{from : accounts[1]}),"cant withdraw more than claimble rewards");
+
+         await rewardPool.claimRewards(0,"3989881600000000",{from : accounts[1]});
+
+         assert.equal(await rewardPool.CLAIMABLE_REWARDS(0),0);
+
+         balance = await rewardPool.CLAIMED_REWARDS(0);
+
+         assert.equal(balance.toString(),"3989881600000000");
+
+         await rewardPool.rewardOfStake(1,stakeOneRewards,stakeOneSign,{from : accounts[2]});
+
+         await rewardPool.finishEpoch();
+
+         /*
+           into 5th epoch
+         */
+
+        assert.equal( await rewardPool.getCurrentEpoch(),5);
+
+        activeStakes = await stacking.getactiveStakesTillEpoch(5);
+
+        assert.equal(activeStakes,1)
+
+        const totalStakeOfSecond = await stacking.getStakeAmount(1);
+         
+        await stacking.removeStake(1,totalStakeOfSecond.toString(),{from : accounts[2]});
+
+        activeStakes = await stacking.getactiveStakesTillEpoch(5);
+        assert.equal(activeStakes,0);
+
+        balance = await stacking.getStakeAmount(1)
+
         assert.equal(balance.toString(),0);
-        balance = await rewardPool.CLAIMED_REWARDS(0);
-        assert.equal(balance.toString(),"927348539605053374");
-        
 
-        assert.equal(await rewardPool.CURRENT_EPOCH(),3);
-        // await ethers.provider.send('evm_increaseTime', [epochTime-2]);
-        // await ethers.provider.send('evm_mine');
-        // await truffleAssert.reverts(rewardPool.calculateRewardWeight(0,1100000,1200000,1000000,1000000),"VM Exception while processing transaction: reverted with reason string ' epoch not completed'");
-        // await truffleAssert.reverts(rewardPool.finishEpoch(),"VM Exception while processing transaction: reverted with panic code 0x12 (Division or modulo division by zero");
+        await stacking.getDuration(0);
+
+        assert.equal(await stacking.getTotalNumberOfStakes(),2);
+
+        assert.equal(await stacking.getStackerLevel(accounts[0]),"none");
+        await volary.transfer(accounts[1],"1667000000000000000000000");
+        await volary.approve(stacking.address,"1667000000000000000000000",{from : accounts[1]})
+        await stacking.createStake("1667000000000000000000",0,{from : accounts[1]});
+        assert.equal(await stacking.getStackerLevel(accounts[1]),"sliver");
+        await stacking.createStake("16670000000000000000000",0,{from : accounts[1]});
+        assert.equal(await stacking.getStackerLevel(accounts[1]),"gold");
+        await stacking.createStake("166700000000000000000000",0,{from : accounts[1]});
+        assert.equal(await stacking.getStackerLevel(accounts[1]),"diamond");
+        await volary.transfer(accounts[1],"1667000000000000000000000");
+        await volary.approve(stacking.address,"1667000000000000000000000",{from : accounts[1]})
+        await stacking.createStake("1667000000000000000000000",0,{from : accounts[1]});
+        assert.equal(await stacking.getStackerLevel(accounts[1]),"platinum");
+        assert.equal(await stacking.getAddedEpoch(4),5); 
+        const activeResult= await stacking.getactiveStakesTillEpoch(5);
+        assert.equal(activeResult.toString(),"4");   
+
+    })
+
+    it("tests different claimed reward percentages",async()=>{
+        const volaryNew = await tokenContract.new();
+        const stackingNew = await stackingContract.new(volaryNew.address);
+        const rewardPoolNew = await rewardsContract.new(volaryNew.address,stackingNew.address,
+        volaryNew.address,volaryNew.address,accounts[0]);
+        await volaryNew.transfer(rewardPoolNew.address,"1000000000000000000000");
+        await volaryNew.transfer(accounts[3],"200000000000000000000");
+        await volaryNew.approve(stackingNew.address,"200000000000000000000",{from : accounts[3]});
+        await stackingNew.addRewardPoolAddress(rewardPoolNew.address)
+        await stackingNew.createStake("200000000000000000000",0,{from : accounts[3]});
+        await rewardPoolNew.startPool();
+        const reward = "50000000000";
+        const signers = await ethers.getSigners();
+        const sign = await signers[0].signMessage(reward)
+        for(let i=0;i<50;i++){
+            await ethers.provider.send('evm_increaseTime', [epochTime]);
+            await ethers.provider.send('evm_mine');
+           
+            await rewardPoolNew.rewardOfStake(0,reward,sign,{from : accounts[3]});
+            await rewardPoolNew.finishEpoch();
+        }
+
+        const epoch = await rewardPoolNew.getCurrentEpoch()
+        
+        assert.equal(epoch.toString(),51)
+
+    })
+
+    it("tests imposed penalities",async()=>{
+
+        const volaryPenalty = await tokenContract.new();
+        const stackingPenalty = await stackingContract.new(volaryPenalty.address);
+        const rewardPenalty = await rewardsContract.new(volaryPenalty.address,stackingPenalty.address,
+        volaryPenalty.address,volaryPenalty.address,accounts[0]);
+        await volaryPenalty.transfer(rewardPenalty.address,"1000000000000000000000");
+        await volaryPenalty.transfer(accounts[4],"200000000000000000000");
+        await volaryPenalty.approve(stackingPenalty.address,"200000000000000000000",{from : accounts[4]});
+        await truffleAssert.reverts(stackingPenalty.createStake("200000000000000000000","13315600",{from : accounts[4]}),"REWARD POOL NOT ADDED");
+        await stackingPenalty.addRewardPoolAddress(rewardPenalty.address)
+        await stackingPenalty.createStake("200000000000000000000","13315600",{from : accounts[4]});
+        await rewardPenalty.startPool();
+        let reward = "0";
+        const signers = await ethers.getSigners();
+        let sign = await signers[0].signMessage(reward)
+        for(let i=0;i<50;i++){
+            await ethers.provider.send('evm_increaseTime', [epochTime]);
+            await ethers.provider.send('evm_mine');
+            await stackingPenalty.removeStake(0,"10",{from : accounts[4]});
+   }
+
+
         await ethers.provider.send('evm_increaseTime', [epochTime]);
         await ethers.provider.send('evm_mine');
-        await rewardPool.calculateRewardWeight(0,1100000,1200000,1000000,1000000);
-        await rewardPool.calculateRewardWeight(1,1300000,1500000,1000000,2432670);
-        await rewardPool.finishEpoch();
-        assert.equal(await rewardPool.CURRENT_EPOCH(),4);
 
-        balance= await rewardPool.ACCUMALATED_REWARDS(0)
-        assert.equal(balance.toString(),"2956233651343379006")
-        balance=await rewardPool.ACCUMALATED_REWARDS(1)
-        assert.equal(balance.toString(),"1361925330300000000")
+        await rewardPenalty.rewardOfStake(0,"0",sign,{from : accounts[4]});
 
-        assert.equal(await rewardPool.CURRENT_EPOCH(),4);
-        // await ethers.provider.send('evm_increaseTime', [epochTime-2]);
-        // await ethers.provider.send('evm_mine');
-        // await truffleAssert.reverts(rewardPool.calculateRewardWeight(0,1100000,1200000,1000000,1000000),"VM Exception while processing transaction: reverted with reason string ' epoch not completed'");
-        // await truffleAssert.reverts(rewardPool.finishEpoch(),"VM Exception while processing transaction: reverted with panic code 0x12 (Division or modulo division by zero");
-        await ethers.provider.send('evm_increaseTime', [epochTime]);
-        await ethers.provider.send('evm_mine');
-        await rewardPool.calculateRewardWeight(0,1100000,1200000,1000000,1000000);
-        await rewardPool.calculateRewardWeight(1,1300000,1500000,1000000,2432670);
-        await rewardPool.finishEpoch();
-        assert.equal(await rewardPool.CURRENT_EPOCH(),5);
+        await stackingPenalty.removeStake(0,"10",{from : accounts[4]});
 
-        balance= await rewardPool.ACCUMALATED_REWARDS(0)
-        assert.equal(balance.toString(),"4055456996675171392")
-        balance=await rewardPool.ACCUMALATED_REWARDS(1)
-        assert.equal(balance.toString(),"1815900440400000000")
+        const penalty = await rewardPenalty.getRewardPenalty(10,epochTime*23,10,100);
+        const activeStakes = await stackingPenalty.getactiveStakesTillEpoch(51);
 
-        await rewardPool.distributeRewards();
+        assert.equal(activeStakes.toString(),1)
 
-        balance= await rewardPool.CLAIMABLE_REWARDS(0)
-        assert.equal(balance.toString(),"1100379958732532322")
-        balance=await rewardPool.CLAIMABLE_REWARDS(1)
-        assert.equal(balance.toString(),"907950220200000000")
+        await truffleAssert.reverts(rewardPenalty.imposeRewardPenalty(0,"12345",10,100),"Only stacking contract can impose penalty")
 
-        balance= await rewardPool.CLAIMED_REWARDS(0)
-        assert.equal(balance.toString(),"927348539605053374")
-        balance=await rewardPool.CLAIMED_REWARDS(1)
-        assert.equal(balance.toString(),"0")
+        assert.equal(0,penalty);
 
+        const epoch = await rewardPenalty.getCurrentEpoch()
+        
+        assert.equal(epoch.toString(),1);
+
+        const StakeAmount = await stackingPenalty.getStakeAmount(0);
+
+        await stackingPenalty.removeStake(0,StakeAmount,{from : accounts[4]});
+
+        const stakesOfAddress = await stackingPenalty.getStakesOfAddress(accounts[4]);
+        
+        const accStakes = await stackingPenalty.stakeOf(accounts[4]);
+        assert.equal(accStakes.toString(),"0");
         
 
 
 
-        
-        
+
         
     })
 
-})
+    
 
+})
