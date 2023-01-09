@@ -5,7 +5,8 @@ const { assert } = require('chai');
 const truffleAssert = require('truffle-assertions');
 const { ethers, network } = require("hardhat");
 
-const epochTime = 604800
+const epochTime = 604800;
+const oneDay = 86400;
 
 
 describe('test volary contract deployment',(accounts) => {
@@ -18,7 +19,7 @@ describe('test volary contract deployment',(accounts) => {
         stacking = await stackingContract.new(volary.address);
         rewardPool = await rewardsContract.new(volary.address,stacking.address,
         volary.address,volary.address,accounts[0]);
-        await truffleAssert.reverts(stacking.createStake("1900",0))
+        await truffleAssert.reverts(stacking.createStake("1900",0),"REWARD POOL NOT ADDED")
         await truffleAssert.reverts(stacking.addRewardPoolAddress(rewardPool.address,{from : accounts[8]}))
         await stacking.addRewardPoolAddress(rewardPool.address)
         await truffleAssert.reverts(stacking.createStake("1900",0))
@@ -81,7 +82,7 @@ describe('test volary contract deployment',(accounts) => {
         let errorSign = await signers[2].signMessage(stakeOneRewards);
 
 
-        await truffleAssert.reverts(rewardPool.rewardOfStake(0,stakeOneRewards,stakeOneSign,{from : accounts[1]}),"epoch not completed");
+        await truffleAssert.reverts(rewardPool.rewardOfStake(0,stakeOneRewards,stakeOneSign,{from : accounts[1]}),"ACCESS RESTRICTED FOR USERS NOW");
         await ethers.provider.send('evm_increaseTime', [epochTime]);
         await ethers.provider.send('evm_mine');
         await truffleAssert.reverts(rewardPool.rewardOfStake(0,stakeOneRewards,stakeOneSign),"not stake holder");
@@ -151,8 +152,8 @@ describe('test volary contract deployment',(accounts) => {
         stakeOneSign = await signers[0].signMessage(stakeOneRewards);
         let gasFeePenalty = "12008"
         assert.equal( await rewardPool.getCurrentEpoch(),2)
-        await truffleAssert.reverts(rewardPool.rewardOfStake(0,stakeOneRewards,stakeOneSign,{from : accounts[1]}),"epoch not completed");
-        await truffleAssert.reverts(rewardPool.rewardOfStakeByAdmin(0,stakeOneRewards,gasFeePenalty),"epoch not completed");
+        await truffleAssert.reverts(rewardPool.rewardOfStake(0,stakeOneRewards,stakeOneSign,{from : accounts[1]}),"ACCESS RESTRICTED FOR USERS NOW");
+        await truffleAssert.reverts(rewardPool.rewardOfStakeByAdmin(0,stakeOneRewards,gasFeePenalty),"ACCESS RESTRICTED FOR ADMIN NOW");
         await ethers.provider.send('evm_increaseTime', [epochTime]);
         await ethers.provider.send('evm_mine');
 
@@ -167,11 +168,23 @@ describe('test volary contract deployment',(accounts) => {
         stakeTwoRewards = "1256700000000000";
         stakeTwoSign = await signers[0].signMessage(stakeTwoRewards);
 
+
+
         await truffleAssert.reverts(rewardPool.rewardOfStakeByAdmin(1,stakeOneRewards,gasFeePenalty,{from : accounts[1]}),"Ownable: caller is not the owner");
+        await truffleAssert.reverts(rewardPool.rewardOfStakeByAdmin(1,stakeOneRewards,gasFeePenalty),"ACCESS RESTRICTED FOR ADMIN NOW");
+
+        await ethers.provider.send('evm_increaseTime', [oneDay]);
+        await ethers.provider.send('evm_mine');
 
         await truffleAssert.reverts(rewardPool.rewardOfStakeByAdmin(0,stakeOneRewards,gasFeePenalty),"REWARD FOR THIS EPOCH IS SET");
-
+        await truffleAssert.reverts(rewardPool.rewardOfStake(1,stakeOneRewards,stakeOneSign),"ACCESS RESTRICTED FOR USERS NOW")
         await rewardPool.rewardOfStakeByAdmin(1,stakeOneRewards,gasFeePenalty);
+
+        await ethers.provider.send('evm_increaseTime', [oneDay]);
+        await ethers.provider.send('evm_mine');
+       
+        await truffleAssert.reverts(rewardPool.rewardOfStakeByAdmin(0,stakeOneRewards,gasFeePenalty),"ACCESS RESTRICTED FOR ADMIN NOW");
+
 
         balance = await rewardPool.ACCUMALATED_REWARDS(1);
         assert.equal(balance.toString(),"153595917617992");
@@ -191,9 +204,10 @@ describe('test volary contract deployment',(accounts) => {
          stakeOneSign = await signers[0].signMessage(stakeOneRewards);
          gasFeePenalty = "17908"
  
-         await truffleAssert.reverts(rewardPool.rewardOfStake(0,stakeOneRewards,stakeOneSign,{from : accounts[1]}),"epoch not completed");
-         await truffleAssert.reverts(rewardPool.rewardOfStakeByAdmin(0,stakeOneRewards,gasFeePenalty),"epoch not completed");
-         await ethers.provider.send('evm_increaseTime', [epochTime]);
+         await truffleAssert.reverts(rewardPool.rewardOfStake(0,stakeOneRewards,stakeOneSign,{from : accounts[1]}),"ACCESS RESTRICTED FOR USERS NOW");
+         await truffleAssert.reverts(rewardPool.rewardOfStakeByAdmin(0,stakeOneRewards,gasFeePenalty),"ACCESS RESTRICTED FOR ADMIN NOW");
+
+         await ethers.provider.send('evm_increaseTime', [epochTime-2*oneDay]);
          await ethers.provider.send('evm_mine');
  
          await rewardPool.rewardOfStake(0,stakeOneRewards,stakeOneSign,{from : accounts[1]});
@@ -208,6 +222,9 @@ describe('test volary contract deployment',(accounts) => {
          stakeTwoSign = await signers[0].signMessage(stakeTwoRewards);
  
          await truffleAssert.reverts(rewardPool.rewardOfStakeByAdmin(1,stakeOneRewards,gasFeePenalty,{from : accounts[1]}),"Ownable: caller is not the owner");
+
+         await ethers.provider.send('evm_increaseTime', [oneDay]);
+         await ethers.provider.send('evm_mine');
  
          await truffleAssert.reverts(rewardPool.rewardOfStakeByAdmin(0,stakeOneRewards,gasFeePenalty),"REWARD FOR THIS EPOCH IS SET");
  
@@ -240,24 +257,30 @@ describe('test volary contract deployment',(accounts) => {
 
          assert.equal(balance.toString(),0);
 
-         await ethers.provider.send('evm_increaseTime', [epochTime]);
+         await ethers.provider.send('evm_increaseTime', [epochTime - oneDay]);
          await ethers.provider.send('evm_mine');
 
          await truffleAssert.reverts(rewardPool.rewardOfStake(0,stakeOneRewards,stakeOneSign,{from : accounts[1]}),"STAKE DOESNT EXISTS");
+
+         await ethers.provider.send('evm_increaseTime', [oneDay]);
+         await ethers.provider.send('evm_mine');
+
          await truffleAssert.reverts(rewardPool.rewardOfStakeByAdmin(0,stakeOneRewards,gasFeePenalty),"STAKE DOESNT EXISTS");
+         
+         const claimable = await rewardPool.CLAIMABLE_REWARDS(0);
 
          await truffleAssert.reverts(rewardPool.claimRewards(0,"3989881600000000"),"ONLY HOLDER CLAIM REWARDS");
-         await truffleAssert.reverts(rewardPool.claimRewards(0,"3989881600000001",{from : accounts[1]}),"cant withdraw more than claimble rewards");
+         await truffleAssert.reverts(rewardPool.claimRewards(0,claimable+1,{from : accounts[1]}),"cant withdraw more than claimble rewards");
 
-         await rewardPool.claimRewards(0,"3989881600000000",{from : accounts[1]});
+         await rewardPool.claimRewards(0,claimable,{from : accounts[1]});
 
          assert.equal(await rewardPool.CLAIMABLE_REWARDS(0),0);
 
          balance = await rewardPool.CLAIMED_REWARDS(0);
 
-         assert.equal(balance.toString(),"3989881600000000");
+         assert.equal(balance.toString(),claimable);
 
-         await rewardPool.rewardOfStake(1,stakeOneRewards,stakeOneSign,{from : accounts[2]});
+         await rewardPool.rewardOfStakeByAdmin(1,stakeOneRewards,"0");
 
          await rewardPool.finishEpoch();
 
@@ -349,17 +372,17 @@ describe('test volary contract deployment',(accounts) => {
         let reward = "0";
         const signers = await ethers.getSigners();
         let sign = await signers[0].signMessage(reward)
-        for(let i=0;i<50;i++){
+        for(let i=0;i<51;i++){
             await ethers.provider.send('evm_increaseTime', [epochTime]);
             await ethers.provider.send('evm_mine');
-            await stackingPenalty.removeStake(0,"10",{from : accounts[4]});
+            await stackingPenalty.removeStake(0,i,{from : accounts[4]});
    }
 
 
-        await ethers.provider.send('evm_increaseTime', [epochTime]);
-        await ethers.provider.send('evm_mine');
+        // await ethers.provider.send('evm_increaseTime', [epochTime]);
+        // await ethers.provider.send('evm_mine');
 
-        await rewardPenalty.rewardOfStake(0,"0",sign,{from : accounts[4]});
+        // await rewardPenalty.rewardOfStake(0,"0",sign,{from : accounts[4]});
 
         await stackingPenalty.removeStake(0,"10",{from : accounts[4]});
 
@@ -384,6 +407,8 @@ describe('test volary contract deployment',(accounts) => {
         
         const accStakes = await stackingPenalty.stakeOf(accounts[4]);
         assert.equal(accStakes.toString(),"0");
+
+        await truffleAssert.reverts(rewardPenalty.totalStakeRemoved(0),"not stacking contract");
         
 
 

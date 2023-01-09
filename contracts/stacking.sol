@@ -8,6 +8,7 @@ interface rewardPool{
     function imposeRewardPenalty(uint256 _stakeId,uint256 stakedPeriod,uint256 _removedStake,uint256 _totalStake) external returns(bool);
     function getCurrentEpoch() external view returns(uint256);
     function getDuration(uint256 _stakeId) view external returns(uint256);
+    function totalStakeRemoved(uint256 _stakeId) external returns(bool);
 }
 contract StakingToken is Ownable {
     uint256 stakeId=0;
@@ -80,7 +81,12 @@ contract StakingToken is Ownable {
         require(msg.sender == getHolderByStakeId(_stakeId),"only stake holder can remove the stake");
         require(_stake <= _totalStake,"can remove only amount less than staked");
         uint256 CURRENT_EPOCH = rewardPool(rewardPoolAddress).getCurrentEpoch();
-        if( _stake == _totalStake) stakesRemovedInEpoch[CURRENT_EPOCH]++;
+        if( _stake == _totalStake)
+        {
+            stakesRemovedInEpoch[CURRENT_EPOCH]++;
+            (bool success)=rewardPool(rewardPoolAddress).totalStakeRemoved(_stakeId);
+            
+        }
         uint256 penalty=0;
         uint256 stakedPeriod= block.timestamp - getStartTimeOfStake(_stakeId);
         if(stakedPeriod < MAX_STACKING_PERIOD)

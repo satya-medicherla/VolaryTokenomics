@@ -30,6 +30,7 @@ contract rewardPool is Ownable{
     uint256 constant EPOCH_TIME=604800; // 1 WEEK
    // uint256 constant EPOCH_TIME= 120;
     uint256 constant WEEK_TIME= 604800;
+    uint256 constant ONE_DAY =  86400;
     //uint256 constant WEEK_TIME= 120;
     uint256 constant DISTRIBUTION_TIME = 604800*2;
    uint256 MIN_STACKING_PERIOD = 2419200; // 4 weeks time
@@ -76,6 +77,22 @@ contract rewardPool is Ownable{
                 "POOL NOT STARTED");
         _;
     }
+
+    modifier userAccess
+    {
+        uint256 epochEndTime = EPOCH_TO_START_TIME[CURRENT_EPOCH]+EPOCH_TIME;
+        require( block.timestamp >= epochEndTime 
+                && block.timestamp <= epochEndTime+ONE_DAY,"ACCESS RESTRICTED FOR USERS NOW");
+        _;
+    }
+
+    modifier adminAccess
+    {
+        uint256 userAccessEndTime = EPOCH_TO_START_TIME[CURRENT_EPOCH]+EPOCH_TIME + ONE_DAY;
+        require( block.timestamp > userAccessEndTime 
+                && block.timestamp <= userAccessEndTime+ONE_DAY,"ACCESS RESTRICTED FOR ADMIN NOW");
+        _;
+    }
     function startPool() onlyOwner public returns(bool)
     {
        require(CURRENT_EPOCH == 0 && DISTRIBUTION_CYCLE== 0 ,
@@ -102,7 +119,7 @@ contract rewardPool is Ownable{
 
     }
 
-    function rewardOfStake(uint256 _stakeId,string memory message,bytes memory signature) public  epochFinished poolStarted returns(bool){
+    function rewardOfStake(uint256 _stakeId,string memory message,bytes memory signature) public   poolStarted userAccess returns(bool){
         require( msg.sender == StakingToken(STAKING_CONTRACT).getHolderByStakeId(_stakeId),"not stake holder");
         require( ! rewardCalculated[_stakeId][CURRENT_EPOCH] , "REWARD FOR THIS EPOCH IS SET");
         require( StakingToken(STAKING_CONTRACT).getStakeAmount(_stakeId) > 0 ,"STAKE DOESNT EXISTS");
@@ -121,7 +138,7 @@ contract rewardPool is Ownable{
         return true;
     }
 
-    function rewardOfStakeByAdmin(uint256 _stakeId,uint256 _rewards, uint256 _gasFeePenalty) public onlyOwner epochFinished poolStarted returns(bool){
+    function rewardOfStakeByAdmin(uint256 _stakeId,uint256 _rewards, uint256 _gasFeePenalty) public onlyOwner poolStarted adminAccess returns(bool){
         require( ! rewardCalculated[_stakeId][CURRENT_EPOCH] , "REWARD FOR THIS EPOCH IS SET");
         require( StakingToken(STAKING_CONTRACT).getStakeAmount(_stakeId) > 0 ,"STAKE DOESNT EXISTS");
         _rewards = _rewards - _gasFeePenalty;
@@ -213,6 +230,14 @@ contract rewardPool is Ownable{
         IERC20(TOKEN_ADDRESS).transfer(holder,rewardsToBeTransferedNow);
         return true;
     }
+
+    function totalStakeRemoved(uint256 _stakeId) external returns(bool) {
+        require(msg.sender == STAKING_CONTRACT,"not stacking contract");
+        CLAIMABLE_REWARDS[_stakeId] += ACCUMALATED_REWARDS[_stakeId];
+        return true; 
+    }
+
+   
 
 
     //verifying functions 
