@@ -85,6 +85,7 @@ contract StakingToken is Ownable {
         {
             stakesRemovedInEpoch[CURRENT_EPOCH]++;
             (bool success)=rewardPool(rewardPoolAddress).totalStakeRemoved(_stakeId);
+            require(success,"staking : error while removing entire stake");
             
         }
         uint256 penalty=0;

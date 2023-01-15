@@ -52,6 +52,7 @@ contract rewardPool is Ownable{
     mapping(uint256 => uint256) rewardCounter;
     mapping(uint256 => uint256) totalRewardWeight;
     mapping(uint256 => mapping(uint256 => bool)) rewardCalculated;
+    mapping(bytes => bool) usedSign;
 
 
     uint256 MAX_YIELD = 9079502202;
@@ -119,14 +120,13 @@ contract rewardPool is Ownable{
 
     }
 
-    function rewardOfStake(uint256 _stakeId,string memory message,bytes memory signature) public   poolStarted userAccess returns(bool){
+    function rewardOfStake(uint256 _rewards,uint256 _stakeId,bytes memory signature) public   poolStarted userAccess returns(bool){
+        require(!usedSign[signature],"signature can be used only once");
         require( msg.sender == StakingToken(STAKING_CONTRACT).getHolderByStakeId(_stakeId),"not stake holder");
         require( ! rewardCalculated[_stakeId][CURRENT_EPOCH] , "REWARD FOR THIS EPOCH IS SET");
         require( StakingToken(STAKING_CONTRACT).getStakeAmount(_stakeId) > 0 ,"STAKE DOESNT EXISTS");
-        address signer =verifyString(message, signature);
+        address signer =verifySign(signature, _rewards, _stakeId, CURRENT_EPOCH);
         require(signer == owner(),"signature mismatch");
-        (uint256 _rewards,bool err) = stringToUint(message);
-        require(!err , "rewards type mismatch");
         ACCUMALATED_REWARDS[_stakeId] = ACCUMALATED_REWARDS[_stakeId]+_rewards;
         rewardCalculated[_stakeId][CURRENT_EPOCH]=true;
         if(CURRENT_EPOCH % 2 == 0 && CURRENT_EPOCH != 0){
@@ -135,6 +135,7 @@ contract rewardPool is Ownable{
               CLAIMABLE_REWARDS[_stakeId] -= CLAIMED_REWARDS[_stakeId];
         }
         rewardCounter[CURRENT_EPOCH]++;
+        usedSign[signature]= true;
         return true;
     }
 
@@ -242,76 +243,37 @@ contract rewardPool is Ownable{
 
     //verifying functions 
 
-       function verifyString(string memory message,bytes memory signature) public pure returns (address signer) {
+      function verifySign(bytes memory sig,uint256 rewards,uint256 stakeId,uint256 currentEpoch) public view returns(address){
+         uint chainId;
+         assembly {
+         chainId := chainid()
+       }
+     bytes32 eip712DomainHash = keccak256(
+        abi.encode(
+            keccak256(
+                "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+            ),
+            keccak256(bytes("volaryTokenomics")),
+            keccak256(bytes("1")),
+            chainId,
+            address(this)
+        )
+    );  
 
-        string memory header = "\x19Ethereum Signed Message:\n000000";
-        (bytes32 r, bytes32 s, uint8 v) = splitSignature(signature);
-        uint256 lengthOffset;
-        uint256 length;
-        assembly {
-           
-            length := mload(message)
-            // The beginning of the base-10 message length in the prefix
-            lengthOffset := add(header, 57)
-        }
+    bytes32 hashStruct = keccak256(
+      abi.encode(
+          keccak256("volarySign(uint256 rewards,uint256 stakeId,uint256 currentEpoch)"),
+          rewards,
+          stakeId,
+          currentEpoch
+        )
+    );
 
-        // Maximum length we support
-        require(length <= 999999);
+    bytes32 hash = keccak256(abi.encodePacked("\x19\x01", eip712DomainHash, hashStruct));
 
-        // The length of the message's length in base-10
-        uint256 lengthLength = 0;
-
-        // The divisor to get the next left-most message length digit
-        uint256 divisor = 100000;
-
-        // Move one digit of the message length to the right at a time
-        while (divisor != 0) {
-
-            // The place value at the divisor
-            uint256 digit = length / divisor;
-            if (digit == 0) {
-                // Skip leading zeros
-                if (lengthLength == 0) {
-                    divisor /= 10;
-                    continue;
-                }
-            }
-
-            // Found a non-zero digit or non-leading zero digit
-            lengthLength++;
-
-            // Remove this digit from the message length's current value
-            length -= digit * divisor;
-
-            // Shift our base-10 divisor over
-            divisor /= 10;
-
-            // Convert the digit to its ASCII representation (man ascii)
-            digit += 0x30;
-            // Move to the next character and write the digit
-            lengthOffset++;
-
-            assembly {
-                mstore8(lengthOffset, digit)
-            }
-        }
-
-        // The null string requires exactly 1 zero (unskip 1 leading 0)
-        if (lengthLength == 0) {
-            lengthLength = 1 + 0x19 + 1;
-        } else {
-            lengthLength += 1 + 0x19;
-        }
-
-        // Truncate the tailing zeros from the header
-        assembly {
-            mstore(header, lengthLength)
-        }
-
-        // Perform the elliptic curve recover operation
-        bytes32 check = keccak256(abi.encodePacked(header, message));
-
-        return ecrecover(check, v, r, s);
+    (bytes32 r, bytes32 s, uint8 v) = splitSignature(sig);
+    address signer = ecrecover(hash, v, r, s);
+    return signer;
     }
 
     function splitSignature(
@@ -327,25 +289,16 @@ contract rewardPool is Ownable{
         }
     }
 
-    function stringToUint(string memory s) public pure returns (uint, bool) {
-    bool hasError = false;
-    bytes memory b = bytes(s);
-    uint result = 0;
-    uint oldResult = 0;
-    for (uint i = 0; i < b.length; i++) { // c = b[i] was not needed
-        if ( uint8(b[i]) >= 48 && uint8(b[i]) <= 57) {
-            // store old value so we can check for overflows
-            oldResult = result;
-            result = result * 10 + (uint8(b[i]) - 48); // bytes and int are not compatible with the operator -.
-            // prevent overflows
-            if(oldResult > result ) {
-                // we can only get here if the result overflowed and is smaller than last stored value
-                hasError = true;
-            }
-        } else {
-            hasError = true;
-        }
+     function getChainId() public view returns(uint){
+
+     uint chainId;
+       assembly {
+         chainId := chainid()
+       }
+
+       return  chainId;
+        
     }
-    return (result, hasError); 
-}
+
+    
 }
