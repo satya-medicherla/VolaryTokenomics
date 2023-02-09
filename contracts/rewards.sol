@@ -107,7 +107,7 @@ contract rewardPool is Ownable{
       return true;
     }
     
-    function finishEpoch() onlyOwner epochFinished public returns(bool){
+    function finishEpoch() onlyOwner epochFinished poolStarted public returns(bool){
         require(rewardCounter[CURRENT_EPOCH]==StakingToken(STAKING_CONTRACT).getactiveStakesTillEpoch(CURRENT_EPOCH),"ALL STAKE REWARDS ARE NOT CALCULATED");
         CURRENT_EPOCH = CURRENT_EPOCH + 1;
         EPOCH_TO_START_TIME[CURRENT_EPOCH]=EPOCH_TO_START_TIME[CURRENT_EPOCH-1]+EPOCH_TIME;

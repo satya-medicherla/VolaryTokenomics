@@ -2,6 +2,8 @@
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 interface rewardPool{
@@ -10,7 +12,11 @@ interface rewardPool{
     function getDuration(uint256 _stakeId) view external returns(uint256);
     function totalStakeRemoved(uint256 _stakeId) external returns(bool);
 }
-contract StakingToken is Ownable {
+
+interface lpToken{
+    function  getLpStake(uint256 _id) view external returns(uint256);
+}
+contract StakingToken is Ownable,IERC721Receiver {
     uint256 stakeId=0;
     uint256 constant MAX_STACKING_PERIOD = 13305600;
     mapping(address => bool) public isStakeHolder;
@@ -22,6 +28,7 @@ contract StakingToken is Ownable {
     mapping(uint256 => uint256) addedInEpoch;
 
     address rewardPoolAddress;
+    address lpAddress;
     address tokenContract;
     address treasury;
     uint256 SILVER_LEVEL_TOKENS = 1667 * 10 ** 18;
@@ -30,15 +37,18 @@ contract StakingToken is Ownable {
         uint256 stakeAmount;
         uint256 duration;
         uint256 stackingStartTime;
+        bool isLp;
+        uint256 tokenId;
     }
     mapping(uint256 => stake) public getStakeById;
     mapping(address => uint256[]) public addressToStakes;
     mapping(uint256 => uint256) public stakedRemovedTime;
     mapping(uint256 => uint256) public stakesAddedInEpoch;
     mapping(uint256 => uint256) public stakesRemovedInEpoch;
-    constructor(address _tokenContract) {
+    constructor(address _tokenContract,address _lpAddress) {
         treasury = msg.sender;
         tokenContract = _tokenContract;
+        lpAddress = _lpAddress;
     }
     
         
@@ -62,6 +72,29 @@ contract StakingToken is Ownable {
         isStakeHolder[msg.sender]=true;
         
     }
+
+        function createStakeLpTokens(uint256 _tokenId,uint256 _duration) public 
+    {
+        require(rewardPoolAddress != address(0),"REWARD POOL NOT ADDED");
+        uint256 _stakeAmount = lpToken(lpAddress).getLpStake(_tokenId);
+        require(  _stakeAmount > 0,"INVALID LP TOKEN");
+        uint256 CURRENT_EPOCH = rewardPool(rewardPoolAddress).getCurrentEpoch();
+        addedInEpoch[stakeId] = CURRENT_EPOCH;
+        stakesAddedInEpoch[CURRENT_EPOCH]++;
+        IERC721(lpAddress).transferFrom(msg.sender,address(this),_tokenId);
+        stake storage newStake=getStakeById[stakeId];
+        newStake.holder = msg.sender;
+        newStake.stakeAmount = _stakeAmount;
+        newStake.duration = _duration;
+        newStake.stackingStartTime = block.timestamp;
+        newStake.isLp = true;
+        newStake.tokenId = _tokenId;
+        stakeId++;
+        stackerLevel[msg.sender]=getStackerLevel(msg.sender);
+        addressToStakes[msg.sender].push(stakeId);
+        isStakeHolder[msg.sender]=true;
+    }
+
     function getStackerLevel(address _stakeholder) public view returns(string memory level) {
     uint256 _stakeAmount = stakeOf(_stakeholder);
     if(_stakeAmount < SILVER_LEVEL_TOKENS)  level="none";
@@ -146,6 +179,17 @@ contract StakingToken is Ownable {
         stake memory temp = getStakeById[_stakeId];
         return temp.stakeAmount;
     }
+
+      function isLpStake(uint256 _stakeId) public view returns(bool){
+        stake memory temp = getStakeById[_stakeId];
+        return temp.isLp;
+    }
+
+    function getTokenId(uint256 _stakeId) public view returns(uint256){
+        require(isLpStake(_stakeId),"not a lp stake");
+        stake memory temp = getStakeById[_stakeId];
+        return temp.tokenId;
+    }
     function getstakesTillEpoch(uint256 epochNumber) public view returns(uint256){
         uint256 result = 0;
         for(uint256 i=0;i<=epochNumber;i++){
@@ -185,5 +229,9 @@ contract StakingToken is Ownable {
 
     function getStakesOfAddress(address holder) public view returns(uint256[] memory){
           return addressToStakes[holder];
+    }
+
+    function onERC721Received(address, address, uint256, bytes memory) public virtual override returns (bytes4) {
+        return this.onERC721Received.selector;
     }
 }

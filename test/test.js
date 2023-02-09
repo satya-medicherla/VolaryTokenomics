@@ -1,6 +1,7 @@
 const stackingContract = artifacts.require("contracts/stacking.sol:StakingToken");
 const rewardsContract = artifacts.require("contracts/rewards.sol:rewardPool");
 const tokenContract = artifacts.require("Volary");
+const lpContract = artifacts.require("contracts/lpContract.sol:lpToken");
 const { assert } = require('chai');
 const truffleAssert = require('truffle-assertions');
 const { ethers, config } = require("hardhat");
@@ -16,13 +17,14 @@ let privateKey = wallet1.privateKey;
 privateKey = privateKey.slice(2,);
 
 describe('test volary contract deployment',(accounts) => {
-    let volary, balance, stacking, rewardPool;
+    let volary, balance, stacking, rewardPool, lpToken;
     let ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
     before(async function () {
         accounts = await web3.eth.getAccounts();
         volary = await tokenContract.new();
-        stacking = await stackingContract.new(volary.address);
+        lpToken = await lpContract.new(volary.address)
+        stacking = await stackingContract.new(volary.address,lpToken.address);
         rewardPool = await rewardsContract.new(volary.address,stacking.address,
         volary.address,volary.address,accounts[0]);
         await truffleAssert.reverts(stacking.createStake("1900",0),"REWARD POOL NOT ADDED")
@@ -351,7 +353,8 @@ describe('test volary contract deployment',(accounts) => {
 
     it("tests different claimed reward percentages",async()=>{
         const volaryNew = await tokenContract.new();
-        const stackingNew = await stackingContract.new(volaryNew.address);
+        const lpTokenNew = await lpContract.new(volaryNew.address)
+        const stackingNew = await stackingContract.new(volaryNew.address,lpTokenNew.address);
         const rewardPoolNew = await rewardsContract.new(volaryNew.address,stackingNew.address,
         volaryNew.address,volaryNew.address,accounts[0]);
         await volaryNew.transfer(rewardPoolNew.address,"1000000000000000000000");
@@ -382,7 +385,8 @@ describe('test volary contract deployment',(accounts) => {
     it("tests imposed penalities",async()=>{
 
         const volaryPenalty = await tokenContract.new();
-        const stackingPenalty = await stackingContract.new(volaryPenalty.address);
+        const lpTokenPenalty = await lpContract.new(volaryPenalty.address)
+        const stackingPenalty = await stackingContract.new(volaryPenalty.address,lpTokenPenalty.address);
         const rewardPenalty = await rewardsContract.new(volaryPenalty.address,stackingPenalty.address,
         volaryPenalty.address,volaryPenalty.address,accounts[0]);
         await volaryPenalty.transfer(rewardPenalty.address,"1000000000000000000000");
@@ -434,6 +438,72 @@ describe('test volary contract deployment',(accounts) => {
         await truffleAssert.reverts(rewardPenalty.totalStakeRemoved(0),"not stacking contract");
         
         
+    })
+
+    it("tests lp token staking",async()=>{
+
+        const newVolary = await tokenContract.new();
+        const newLp = await lpContract.new(newVolary.address)
+        const newStacking = await stackingContract.new(newVolary.address,newLp.address);
+        const newReward = await rewardsContract.new(newVolary.address,newStacking.address,
+        newVolary.address,newVolary.address,accounts[0]);
+
+        await newVolary.transfer(newReward.address,"1000000000000000000000");
+        await newVolary.transfer(accounts[8],"200000000000000000000");
+        await truffleAssert.reverts(newStacking.createStakeLpTokens(1,"13315600",{from : accounts[4]}),"REWARD POOL NOT ADDED");
+
+        await newStacking.addRewardPoolAddress(newReward.address);
+
+        await newVolary.approve(newLp.address,"200000000000000000000",{from : accounts[8]});
+
+        await newLp.stakeVolary("200000000000000000000",{from : accounts[8]});
+
+        let bal = await newLp.getLpStake(0);
+
+        assert.equal(bal.toString(),"200000000000000000000");
+
+        await truffleAssert.reverts(newStacking.createStakeLpTokens(0,"13315600",{ from : accounts[8]}));
+        
+        await newLp.approve(newStacking.address , 0 , { from : accounts[8]});
+        await newStacking.createStakeLpTokens(0,"13315600",{ from : accounts[8]});
+
+        bal = await newStacking.getStakeAmount(0);
+
+        assert.equal(bal.toString(), "200000000000000000000");
+
+        await newReward.startPool();
+        bal = await newReward.CURRENT_EPOCH();
+        assert.equal(bal.toString(),"1");
+        await truffleAssert.reverts(newReward.finishEpoch(),' epoch not completed');
+
+        await ethers.provider.send('evm_increaseTime', [epochTime]);
+        await ethers.provider.send('evm_mine');
+        
+        await truffleAssert.reverts(newReward.finishEpoch(),'ALL STAKE REWARDS ARE NOT CALCULATED');
+        await  truffleAssert.reverts(newReward.rewardOfStakeByAdmin(0,"1234","1"),'ACCESS RESTRICTED FOR ADMIN NOW');
+
+        await ethers.provider.send('evm_increaseTime', [oneDay]);
+        await ethers.provider.send('evm_mine');
+
+        await newReward.rewardOfStakeByAdmin(0,"1234","1");
+
+        bal = await newReward.ACCUMALATED_REWARDS(0);
+
+        assert.equal(bal.toString(),"1233");
+         
+        await newReward
+        bal = await newReward.CURRENT_EPOCH();
+        assert.equal(bal.toString(),"1");
+       
+
+        
+
+
+
+
+       
+
+
     })
 
     
