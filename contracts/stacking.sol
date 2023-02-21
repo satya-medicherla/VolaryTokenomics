@@ -2,8 +2,6 @@
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
-import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 interface rewardPool{
@@ -16,7 +14,7 @@ interface rewardPool{
 interface lpToken{
     function  getLpStake(uint256 _id) view external returns(uint256);
 }
-contract StakingToken is Ownable,IERC721Receiver {
+contract StakingToken is Ownable {
     uint256 stakeId=0;
     uint256 constant MAX_STACKING_PERIOD = 13305600;
     mapping(address => bool) public isStakeHolder;
@@ -26,6 +24,8 @@ contract StakingToken is Ownable,IERC721Receiver {
     mapping(uint256 => bool) isPenalized;
     mapping(uint256 => uint256) penalizedStakePeriod;
     mapping(uint256 => uint256) addedInEpoch;
+    uint256 [] tokenStakes;
+    uint256 [] lpStakes;
 
     address rewardPoolAddress;
     address lpAddress;
@@ -38,7 +38,6 @@ contract StakingToken is Ownable,IERC721Receiver {
         uint256 duration;
         uint256 stackingStartTime;
         bool isLp;
-        uint256 tokenId;
     }
     mapping(uint256 => stake) public getStakeById;
     mapping(address => uint256[]) public addressToStakes;
@@ -52,47 +51,36 @@ contract StakingToken is Ownable,IERC721Receiver {
     }
     
         
-    function createStake(uint256 _stakeAmount,uint256 _duration)
+    function createStake(uint256 _stakeAmount,uint256 _duration,bool isLp)
         public
     { 
+        require(_stakeAmount > 0 , "zero tokens cant be staked");
         require(rewardPoolAddress != address(0),"REWARD POOL NOT ADDED");
         uint256 CURRENT_EPOCH = rewardPool(rewardPoolAddress).getCurrentEpoch();
         addedInEpoch[stakeId] = CURRENT_EPOCH;
         stakesAddedInEpoch[CURRENT_EPOCH]++;
-        bool result=IERC20(tokenContract).transferFrom(msg.sender,address(this),_stakeAmount);
+        address currentToken=tokenContract;
+        if(isLp) currentToken = lpAddress;
+        bool result=IERC20(currentToken).transferFrom(msg.sender,address(this),_stakeAmount);
         require(result,"stake transfer failed");
         stake storage newStake=getStakeById[stakeId];
         newStake.holder = msg.sender;
         newStake.stakeAmount = _stakeAmount;
         newStake.duration = _duration;
         newStake.stackingStartTime = block.timestamp;
+        if(isLp)
+        { 
+            lpStakes.push(stakeId);
+            newStake.isLp = true;
+
+        }
+        else tokenStakes.push(stakeId);
+
         addressToStakes[msg.sender].push(stakeId);
         stakeId++;
         stackerLevel[msg.sender]=getStackerLevel(msg.sender);
         isStakeHolder[msg.sender]=true;
         
-    }
-
-        function createStakeLpTokens(uint256 _tokenId,uint256 _duration) public 
-    {
-        require(rewardPoolAddress != address(0),"REWARD POOL NOT ADDED");
-        uint256 _stakeAmount = lpToken(lpAddress).getLpStake(_tokenId);
-        require(  _stakeAmount > 0,"INVALID LP TOKEN");
-        uint256 CURRENT_EPOCH = rewardPool(rewardPoolAddress).getCurrentEpoch();
-        addedInEpoch[stakeId] = CURRENT_EPOCH;
-        stakesAddedInEpoch[CURRENT_EPOCH]++;
-        IERC721(lpAddress).transferFrom(msg.sender,address(this),_tokenId);
-        stake storage newStake=getStakeById[stakeId];
-        newStake.holder = msg.sender;
-        newStake.stakeAmount = _stakeAmount;
-        newStake.duration = _duration;
-        newStake.stackingStartTime = block.timestamp;
-        newStake.isLp = true;
-        newStake.tokenId = _tokenId;
-        stakeId++;
-        stackerLevel[msg.sender]=getStackerLevel(msg.sender);
-        addressToStakes[msg.sender].push(stakeId);
-        isStakeHolder[msg.sender]=true;
     }
 
     function getStackerLevel(address _stakeholder) public view returns(string memory level) {
@@ -113,6 +101,10 @@ contract StakingToken is Ownable,IERC721Receiver {
         uint256 _totalStake=getStakeAmount(_stakeId);
         require(msg.sender == getHolderByStakeId(_stakeId),"only stake holder can remove the stake");
         require(_stake <= _totalStake,"can remove only amount less than staked");
+        address currentToken = tokenContract;
+        bool isLp = isLpStake(_stakeId);
+        if(isLp) currentToken = lpAddress;
+
         uint256 CURRENT_EPOCH = rewardPool(rewardPoolAddress).getCurrentEpoch();
         if( _stake == _totalStake)
         {
@@ -128,13 +120,13 @@ contract StakingToken is Ownable,IERC721Receiver {
             if(isDurationBound(_stakeId)){ 
                 uint256 _factor = rewardPool(rewardPoolAddress).getDuration(_stakeId);
                 penalty = (_factor*getPrincipalPenalty(_stake))/(10**6);
-                IERC20(tokenContract).transfer(treasury,penalty);
+                IERC20(currentToken).transfer(treasury,penalty);
                 }
             
             rewardPool(rewardPoolAddress).imposeRewardPenalty(_stakeId,stakedPeriod,_stake,_totalStake);
             isPenalized[_stakeId]= true;
         }
-        bool result=IERC20(tokenContract).transfer( msg.sender , _stake - penalty);
+        bool result=IERC20(currentToken).transfer( msg.sender , _stake - penalty);
         require(result,"error transfering tokens to holder");
         stake storage temp = getStakeById[_stakeId];
         temp.stakeAmount= getStakeAmount(_stakeId) - _stake;
@@ -185,11 +177,6 @@ contract StakingToken is Ownable,IERC721Receiver {
         return temp.isLp;
     }
 
-    function getTokenId(uint256 _stakeId) public view returns(uint256){
-        require(isLpStake(_stakeId),"not a lp stake");
-        stake memory temp = getStakeById[_stakeId];
-        return temp.tokenId;
-    }
     function getstakesTillEpoch(uint256 epochNumber) public view returns(uint256){
         uint256 result = 0;
         for(uint256 i=0;i<=epochNumber;i++){
@@ -231,7 +218,5 @@ contract StakingToken is Ownable,IERC721Receiver {
           return addressToStakes[holder];
     }
 
-    function onERC721Received(address, address, uint256, bytes memory) public virtual override returns (bytes4) {
-        return this.onERC721Received.selector;
-    }
+   
 }
