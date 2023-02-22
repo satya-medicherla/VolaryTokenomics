@@ -1,6 +1,7 @@
 const stackingContract = artifacts.require("contracts/stacking.sol:StakingToken");
 const rewardsContract = artifacts.require("contracts/rewards.sol:rewardPool");
 const tokenContract = artifacts.require("Volary");
+const oracleContract = artifacts.require("contracts/oracle.sol:priceFeed")
 const lpContract = artifacts.require("contracts/lpContract.sol:lpToken");
 const { assert } = require('chai');
 const truffleAssert = require('truffle-assertions');
@@ -17,14 +18,15 @@ let privateKey = wallet1.privateKey;
 privateKey = privateKey.slice(2,);
 
 describe('test volary contract deployment',(accounts) => {
-    let volary, balance, stacking, rewardPool, lpToken;
+    let volary, balance, stacking, rewardPool, lpToken, priceFeed;
     let ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
     before(async function () {
         accounts = await web3.eth.getAccounts();
         volary = await tokenContract.new();
-        lpToken = await lpContract.new()
-        stacking = await stackingContract.new(volary.address,lpToken.address);
+        lpToken = await lpContract.new();
+        priceFeed = await oracleContract.new()
+        stacking = await stackingContract.new(volary.address,lpToken.address,priceFeed.address);
         rewardPool = await rewardsContract.new(volary.address,stacking.address,
         volary.address,volary.address,accounts[0]);
         await truffleAssert.reverts(stacking.createStake("1900",0,false),"REWARD POOL NOT ADDED")
@@ -53,6 +55,10 @@ describe('test volary contract deployment',(accounts) => {
          * adding stakes two stakes 
          * one with duration and other with no stakes
          */
+        let setPrice = 0.15 * 10 ** 6;
+        await priceFeed.feedPrice(setPrice.toString());
+        let price = await priceFeed.getPrice();
+        assert.equal(price.toString(),setPrice.toString())
         await volary.approve(stacking.address,"200000000000000000000",{from : accounts[1]})
         await volary.approve(stacking.address,"100000000000000000000",{from : accounts[2]})
         await stacking.createStake("200000000000000000000",0,false,{from : accounts[1]});
@@ -332,19 +338,24 @@ describe('test volary contract deployment',(accounts) => {
 
         assert.equal(await stacking.getTotalNumberOfStakes(),2);
 
-        assert.equal(await stacking.getStackerLevel(accounts[0]),"none");
+        assert.equal(await stacking.getStackerLevel(0),"none");
         await volary.transfer(accounts[1],"1667000000000000000000000");
         await volary.approve(stacking.address,"1667000000000000000000000",{from : accounts[1]})
+
         await stacking.createStake("1667000000000000000000",0,false,{from : accounts[1]});
-        assert.equal(await stacking.getStackerLevel(accounts[1]),"sliver");
+        assert.equal(await stacking.getStackerLevel(2),"sliver");
+
         await stacking.createStake("16670000000000000000000",0,false,{from : accounts[1]});
-        assert.equal(await stacking.getStackerLevel(accounts[1]),"gold");
+        assert.equal(await stacking.getStackerLevel(3),"gold");
+
         await stacking.createStake("166700000000000000000000",0,false,{from : accounts[1]});
-        assert.equal(await stacking.getStackerLevel(accounts[1]),"diamond");
+        assert.equal(await stacking.getStackerLevel(4),"diamond");
+
         await volary.transfer(accounts[1],"1667000000000000000000000");
         await volary.approve(stacking.address,"1667000000000000000000000",{from : accounts[1]})
         await stacking.createStake("1667000000000000000000000",0,false,{from : accounts[1]});
-        assert.equal(await stacking.getStackerLevel(accounts[1]),"platinum");
+        assert.equal(await stacking.getStackerLevel(5),"platinum");
+
         assert.equal(await stacking.getAddedEpoch(4),5); 
         const activeResult= await stacking.getactiveStakesTillEpoch(5);
         assert.equal(activeResult.toString(),"4");   
@@ -354,7 +365,8 @@ describe('test volary contract deployment',(accounts) => {
     it("tests different claimed reward percentages",async()=>{
         const volaryNew = await tokenContract.new();
         const lpTokenNew = await lpContract.new()
-        const stackingNew = await stackingContract.new(volaryNew.address,lpTokenNew.address);
+        const priceFeedNew = await oracleContract.new();
+        const stackingNew = await stackingContract.new(volaryNew.address,lpTokenNew.address,priceFeedNew.address);
         const rewardPoolNew = await rewardsContract.new(volaryNew.address,stackingNew.address,
         volaryNew.address,volaryNew.address,accounts[0]);
         await volaryNew.transfer(rewardPoolNew.address,"1000000000000000000000");
@@ -385,8 +397,9 @@ describe('test volary contract deployment',(accounts) => {
     it("tests imposed penalities",async()=>{
 
         const volaryPenalty = await tokenContract.new();
-        const lpTokenPenalty = await lpContract.new()
-        const stackingPenalty = await stackingContract.new(volaryPenalty.address,lpTokenPenalty.address);
+        const lpTokenPenalty = await lpContract.new();
+        const priceFeedPenalty = await oracleContract.new();
+        const stackingPenalty = await stackingContract.new(volaryPenalty.address,lpTokenPenalty.address,priceFeedPenalty.address);
         const rewardPenalty = await rewardsContract.new(volaryPenalty.address,stackingPenalty.address,
         volaryPenalty.address,volaryPenalty.address,accounts[0]);
         await volaryPenalty.transfer(rewardPenalty.address,"1000000000000000000000");
@@ -444,7 +457,8 @@ describe('test volary contract deployment',(accounts) => {
 
         const newVolary = await tokenContract.new();
         const newLp = await lpContract.new()
-        const newStacking = await stackingContract.new(newVolary.address,newLp.address);
+        const newPriceFeed = await oracleContract.new();
+        const newStacking = await stackingContract.new(newVolary.address,newLp.address,newPriceFeed.address);
         const newReward = await rewardsContract.new(newVolary.address,newStacking.address,
         newVolary.address,newVolary.address,accounts[0]);
 
@@ -470,6 +484,8 @@ describe('test volary contract deployment',(accounts) => {
         bal = await newStacking.getStakeAmount(0);
 
         assert.equal(bal.toString(), "200000000000000000000");
+
+        assert.equal(await newStacking.getStackerLevel(0),"not applicable");
 
         await newStacking.removeStake(0,"100000000000000000000",{ from : accounts[8]});
 

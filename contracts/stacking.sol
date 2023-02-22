@@ -1,3 +1,4 @@
+
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
@@ -11,6 +12,10 @@ interface rewardPool{
     function totalStakeRemoved(uint256 _stakeId) external returns(bool);
 }
 
+interface priceFeed{
+    function getPrice() external view returns(uint256);
+}
+
 interface lpToken{
     function  getLpStake(uint256 _id) view external returns(uint256);
 }
@@ -20,7 +25,6 @@ contract StakingToken is Ownable {
     mapping(address => bool) public isStakeHolder;
     mapping(address => uint256) internal rewards;
     mapping(address => uint256) internal recentWithdrawTime;
-    mapping(address => string) stackerLevel;
     mapping(uint256 => bool) isPenalized;
     mapping(uint256 => uint256) penalizedStakePeriod;
     mapping(uint256 => uint256) addedInEpoch;
@@ -28,26 +32,30 @@ contract StakingToken is Ownable {
     uint256 [] lpStakes;
 
     address rewardPoolAddress;
+    address oracleAddress;
     address lpAddress;
     address tokenContract;
     address treasury;
-    uint256 SILVER_LEVEL_TOKENS = 1667 * 10 ** 18;
+    uint256 SILVER_LEVEL_TOKENS = 250 * 10 ** 6;
     struct stake{
         address holder;
         uint256 stakeAmount;
         uint256 duration;
         uint256 stackingStartTime;
         bool isLp;
+        uint256 usdPrice;
+        uint256 usdValue;
     }
     mapping(uint256 => stake) public getStakeById;
     mapping(address => uint256[]) public addressToStakes;
     mapping(uint256 => uint256) public stakedRemovedTime;
     mapping(uint256 => uint256) public stakesAddedInEpoch;
     mapping(uint256 => uint256) public stakesRemovedInEpoch;
-    constructor(address _tokenContract,address _lpAddress) {
+    constructor(address _tokenContract,address _lpAddress,address _oracleAddress) {
         treasury = msg.sender;
         tokenContract = _tokenContract;
         lpAddress = _lpAddress;
+        oracleAddress= _oracleAddress;
     }
     
         
@@ -74,17 +82,24 @@ contract StakingToken is Ownable {
             newStake.isLp = true;
 
         }
-        else tokenStakes.push(stakeId);
+        else
+        {    
+             uint256 currentPrice=priceFeed(oracleAddress).getPrice();
+             newStake.usdPrice = currentPrice;
+             uint256 currentValue =( _stakeAmount * currentPrice ) / (10 ** 18);
+             newStake.usdValue = currentValue;
+             tokenStakes.push(stakeId);
+        }
 
         addressToStakes[msg.sender].push(stakeId);
         stakeId++;
-        stackerLevel[msg.sender]=getStackerLevel(msg.sender);
         isStakeHolder[msg.sender]=true;
         
     }
 
-    function getStackerLevel(address _stakeholder) public view returns(string memory level) {
-    uint256 _stakeAmount = stakeOf(_stakeholder);
+    function getStackerLevel(uint256 _stakeId) public view returns(string memory level) {
+    if(isLpStake(_stakeId)) return "not applicable";
+    uint256 _stakeAmount = getUsdValue(_stakeId);
     if(_stakeAmount < SILVER_LEVEL_TOKENS)  level="none";
     else if (_stakeAmount  >= SILVER_LEVEL_TOKENS*1000)  level="platinum";
     else if (_stakeAmount  >= SILVER_LEVEL_TOKENS*100)  level="diamond";
@@ -130,6 +145,9 @@ contract StakingToken is Ownable {
         require(result,"error transfering tokens to holder");
         stake storage temp = getStakeById[_stakeId];
         temp.stakeAmount= getStakeAmount(_stakeId) - _stake;
+        uint256 stakedUsdPrice = temp.usdPrice;
+        uint256 updatedUsdValue = (stakedUsdPrice * getStakeAmount(_stakeId))/(10 ** 18);
+        temp.usdValue = updatedUsdValue;
         if(stakeOf(msg.sender) == 0) isStakeHolder[msg.sender] = false;        
         return true;
     }
@@ -154,6 +172,11 @@ contract StakingToken is Ownable {
     function getStartTimeOfStake(uint256 _stakeId) view public returns(uint256){
         stake memory temp = getStakeById[_stakeId];
         return temp.stackingStartTime;
+    }
+
+    function getUsdValue(uint256 _stakeId) view public returns(uint256){
+        stake memory temp = getStakeById[_stakeId];
+        return temp.usdValue;
     }
 
     function getHolderByStakeId(uint256 _stakeId) public view returns(address){
